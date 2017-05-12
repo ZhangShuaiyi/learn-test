@@ -1,0 +1,6 @@
+site_name: Qemu-kvm about
+pages:
+- 说明: 'index.md'
+- 虚拟机迁移: 
+  - 'qemu-kvm迁移流程': 'migrate/qemu-migrate-description.md'
+theme: readthedocs
