@@ -1,4 +1,5 @@
 use std::fs::File;
+use std::sync::{Arc, Mutex};
 
 use linux_loader;
 use linux_loader::loader::KernelLoader;
@@ -10,6 +11,9 @@ use vm_memory::bitmap::AtomicBitmap;
 use vm_memory::{GuestAddress, Bytes, Address, GuestMemory};
 use kvm_ioctls::{Kvm, VcpuExit};
 use kvm_bindings::{kvm_userspace_memory_region, kvm_segment};
+use vm_superio::{serial::SerialEvents, Serial, Trigger};
+use vmm_sys_util::eventfd::EventFd;
+use vmm_sys_util::eventfd::EFD_NONBLOCK;
 
 type GuestMemoryMmap = vm_memory::GuestMemoryMmap<AtomicBitmap>;
 
@@ -225,7 +229,14 @@ fn main() {
     guest_mem
         .write_obj(start_info, start_info_addr).unwrap();
 
-    // std::thread::sleep(std::time::Duration::from_secs(200));
+    const COM1: u16 = 0x3f8;
+    let com_evt_1 = EventFdTrigger::new(EventFd::new(EFD_NONBLOCK).unwrap());
+    let stdio_serial = Arc::new(Mutex::new(Serial::with_events(
+        com_evt_1.try_clone().unwrap(),
+        DummySerialEvent,
+        std::io::stdout(),
+    )));
+
     loop {
         match vcpu.run().expect("run failed") {
             VcpuExit::Hlt => {
@@ -234,11 +245,18 @@ fn main() {
             }
             VcpuExit::MmioRead(_, _) => {}
             VcpuExit::MmioWrite(_, _) => {}
-            VcpuExit::IoIn(_, data) => {
-                print!("{}", data[0] as char);
+            VcpuExit::IoIn(addr, data) => {
+                if addr >= COM1 && addr - COM1 < 8 {
+                    data[0] = stdio_serial.lock().unwrap().read((addr - COM1) as u8);
+                }
             }
-            VcpuExit::IoOut(_, _) => {
-                // print!("{}", data[0] as char);
+            VcpuExit::IoOut(addr, data) => {
+                if addr >= COM1 && addr - COM1 < 8 {
+                    let _ = stdio_serial
+                        .lock()
+                        .unwrap()
+                        .write((addr - COM1) as u8, data[0]);
+                }
             }
             VcpuExit::Shutdown => {
                 println!("KVM_EXIT_SHUTDOWN");
@@ -252,6 +270,7 @@ fn main() {
         }
     }
 
+    // std::thread::sleep(std::time::Duration::from_secs(300));
 }
 
 fn add_memmap_entry(memmap: &mut Vec<hvm_memmap_table_entry>, addr: u64, size: u64, mem_type: u32) {
@@ -371,4 +390,47 @@ fn write_gdt_table(table: &[u64], guest_mem: &GuestMemoryMmap) {
             .checked_offset(boot_gdt_addr, index * std::mem::size_of::<u64>()).unwrap();
         guest_mem.write_obj(*entry, addr).unwrap();
     }
+}
+
+struct EventFdTrigger(EventFd);
+
+impl Trigger for EventFdTrigger {
+    type E = std::io::Error;
+
+    fn trigger(&self) -> std::io::Result<()> {
+        self.write(1)
+    }
+}
+
+impl std::ops::Deref for EventFdTrigger {
+    type Target = EventFd;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl EventFdTrigger {
+    /// Clone an `EventFdTrigger`.
+    pub fn try_clone(&self) -> std::io::Result<Self> {
+        Ok(EventFdTrigger((**self).try_clone()?))
+    }
+
+    /// Create an `EventFdTrigger`.
+    pub fn new(evt: EventFd) -> Self {
+        Self(evt)
+    }
+
+    // /// Get the associated event fd out of an `EventFdTrigger`.
+    // pub fn get_event(&self) -> EventFd {
+    //     self.0.try_clone().unwrap()
+    // }
+}
+
+struct DummySerialEvent;
+
+impl SerialEvents for DummySerialEvent {
+    fn buffer_read(&self) {}
+    fn out_byte(&self) {}
+    fn tx_lost_byte(&self) {}
+    fn in_buffer_empty(&self) {}
 }
