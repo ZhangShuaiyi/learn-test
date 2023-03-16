@@ -1,17 +1,19 @@
 use std::fs::File;
-use std::sync::{Arc, Mutex};
 use std::io::{Seek, SeekFrom};
+use std::sync::{Arc, Mutex};
 
+use kvm_bindings::{
+    kvm_pit_config, kvm_segment, kvm_userspace_memory_region, KVM_PIT_SPEAKER_DUMMY,
+};
+use kvm_ioctls::{Kvm, VcpuExit};
 use linux_loader;
-use linux_loader::loader::KernelLoader;
-use linux_loader::loader::elf::PvhBootCapability::PvhEntryPresent;
 use linux_loader::loader::elf::start_info::{
     hvm_memmap_table_entry, hvm_modlist_entry, hvm_start_info,
 };
+use linux_loader::loader::elf::PvhBootCapability::PvhEntryPresent;
+use linux_loader::loader::KernelLoader;
 use vm_memory::bitmap::AtomicBitmap;
-use vm_memory::{GuestAddress, Bytes, Address, GuestMemory};
-use kvm_ioctls::{Kvm, VcpuExit};
-use kvm_bindings::{kvm_pit_config, kvm_userspace_memory_region, kvm_segment, KVM_PIT_SPEAKER_DUMMY};
+use vm_memory::{Address, Bytes, GuestAddress, GuestMemory};
 use vm_superio::{serial::SerialEvents, Serial, Trigger};
 use vmm_sys_util::eventfd::EventFd;
 use vmm_sys_util::eventfd::EFD_NONBLOCK;
@@ -43,7 +45,8 @@ const KERNEL_PATH: &str = "/opt/kata/share/kata-containers/vmlinux-5.19.2-96";
 const INITRD_PATH: &str = "/root/datas/centos-no-kernel-initramfs.img";
 // run /bin/bash as init process, need mount /proc and /sys
 // mount -t proc proc /proc && mount -t sysfs sysfs /sys
-const DEFAULT_KERNEL_CMDLINE: &str = "console=ttyS0 noapic reboot=k panic=1 pci=off acpi=off rdinit=/bin/bash";
+const DEFAULT_KERNEL_CMDLINE: &str =
+    "console=ttyS0 noapic reboot=k panic=1 pci=off acpi=off rdinit=/bin/bash";
 // const DEFAULT_KERNEL_CMDLINE: &str = "console=ttyS0 noapic reboot=k panic=1 pci=off acpi=off";
 
 fn main() {
@@ -78,15 +81,26 @@ fn main() {
 
     // create vcpu and set cpuid
     let vcpu = vm.create_vcpu(0).expect("create vcpu failed");
-    let kvm_cpuid = kvm.get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES).unwrap();
+    let kvm_cpuid = kvm
+        .get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)
+        .unwrap();
     vcpu.set_cpuid2(&kvm_cpuid).unwrap();
 
     let mut kernel_file = File::open(KERNEL_PATH).expect("open kernel file failed");
 
     let kernel_entry_addr: GuestAddress;
-    let entry = linux_loader::loader::elf::Elf::load(&guest_mem, None, &mut kernel_file, Some(GuestAddress(HIMEM_START))).unwrap();
-    println!("kernel_load: 0x{:x} kernel_end:0x{:x}",
-        entry.kernel_load.raw_value(), entry.kernel_end as u64);
+    let entry = linux_loader::loader::elf::Elf::load(
+        &guest_mem,
+        None,
+        &mut kernel_file,
+        Some(GuestAddress(HIMEM_START)),
+    )
+    .unwrap();
+    println!(
+        "kernel_load: 0x{:x} kernel_end:0x{:x}",
+        entry.kernel_load.raw_value(),
+        entry.kernel_end as u64
+    );
     if let PvhEntryPresent(pvh_entry_addr) = entry.pvh_boot_cap {
         // println!("kernel pvh entry addr: 0x{:x}", pvh_entry_addr.0);
         kernel_entry_addr = pvh_entry_addr;
@@ -104,20 +118,16 @@ fn main() {
     };
     initramfs_file.seek(SeekFrom::Start(0)).unwrap();
     let first_region = guest_mem.find_region(GuestAddress::new(0)).unwrap();
-    assert!(
-        initramfs_size <= first_region.size(),
-        "too big initrd"
-    );
-    let initrd_addr =
-        GuestAddress((first_region.size() - initramfs_size) as u64 & !(4096 - 1));
+    assert!(initramfs_size <= first_region.size(), "too big initrd");
+    let initrd_addr = GuestAddress((first_region.size() - initramfs_size) as u64 & !(4096 - 1));
     guest_mem
-        .read_from(
-            initrd_addr,
-            &mut initramfs_file,
-            initramfs_size,
-        )
+        .read_from(initrd_addr, &mut initramfs_file, initramfs_size)
         .unwrap();
-    println!("initramfs loaded address = 0x{:x} size = 0x{:x}", initrd_addr.raw_value(), initramfs_size);
+    println!(
+        "initramfs loaded address = 0x{:x} size = 0x{:x}",
+        initrd_addr.raw_value(),
+        initramfs_size
+    );
 
     // set regs
     let mut regs = vcpu.get_regs().unwrap();
@@ -162,9 +172,6 @@ fn main() {
     };
     // set sregs
     let mut sregs = vcpu.get_sregs().unwrap();
-    // let code_seg = seg_with_st(1, 0b1011);
-    // let data_seg = seg_with_st(2, 0b0011);
-    // let tss_seg = seg_with_st(3, 0b1011);
     let code_seg = segment_from_gdt(gdt_table[1], 1);
     let data_seg = segment_from_gdt(gdt_table[2], 2);
     let tss_seg = segment_from_gdt(gdt_table[3], 3);
@@ -184,10 +191,11 @@ fn main() {
 
     sregs.cr0 = CR0_PE;
     sregs.cr4 = 0;
-    
+
     vcpu.set_sregs(&sregs).unwrap();
 
-    let boot_cmdline = linux_loader::cmdline::Cmdline::try_from(DEFAULT_KERNEL_CMDLINE, CMDLINE_MAX_SIZE).unwrap();
+    let boot_cmdline =
+        linux_loader::cmdline::Cmdline::try_from(DEFAULT_KERNEL_CMDLINE, CMDLINE_MAX_SIZE).unwrap();
     linux_loader::loader::load_cmdline(&guest_mem, CMDLINE_START, &boot_cmdline).unwrap();
 
     let mut start_info = hvm_start_info::default();
@@ -197,7 +205,7 @@ fn main() {
     start_info.cmdline_paddr = CMDLINE_START.raw_value();
     start_info.memmap_paddr = MEMMAP_START.raw_value();
 
-    let ramdisk_mod = hvm_modlist_entry{
+    let ramdisk_mod = hvm_modlist_entry {
         paddr: initrd_addr.raw_value(),
         size: initramfs_size as u64,
         ..Default::default()
@@ -224,7 +232,7 @@ fn main() {
     let first_addr_past_32bits = GuestAddress(FIRST_ADDR_PAST_32BITS);
     let end_32bit_gap_start = GuestAddress(MMIO_MEM_START);
     let himem_start = GuestAddress(HIMEM_START);
-    
+
     if mem_end < first_addr_past_32bits {
         add_memmap_entry(
             &mut memmap,
@@ -259,13 +267,15 @@ fn main() {
         .checked_offset(
             memmap_start_addr,
             std::mem::size_of::<hvm_memmap_table_entry>() * start_info.memmap_entries as usize,
-        ).unwrap();
-    
-       // For every entry in the memmap vector, create a MemmapTableEntryWrapper
+        )
+        .unwrap();
+
+    // For every entry in the memmap vector, create a MemmapTableEntryWrapper
     // and write it to guest memory.
     for memmap_entry in memmap {
         guest_mem
-            .write_obj(memmap_entry, memmap_start_addr).unwrap();
+            .write_obj(memmap_entry, memmap_start_addr)
+            .unwrap();
         memmap_start_addr =
             memmap_start_addr.unchecked_add(std::mem::size_of::<hvm_memmap_table_entry>() as u64);
     }
@@ -276,9 +286,9 @@ fn main() {
     let start_info_addr = PVH_INFO_START;
 
     guest_mem
-        .checked_offset(start_info_addr, std::mem::size_of::<hvm_start_info>()).unwrap();
-    guest_mem
-        .write_obj(start_info, start_info_addr).unwrap();
+        .checked_offset(start_info_addr, std::mem::size_of::<hvm_start_info>())
+        .unwrap();
+    guest_mem.write_obj(start_info, start_info_addr).unwrap();
 
     //        COM Port      IO Port     gsi
     // ttyS0  COM1          0x3f8       4
@@ -380,27 +390,6 @@ pub fn gdt_entry(flags: u16, base: u32, limit: u32) -> u64 {
         | ((limit as u64) & 0x0000ffffu64)
 }
 
-// fn seg_with_st(selector_index: u16, type_: u8) -> kvm_segment {
-//     kvm_segment {
-//         base: 0,
-//         limit: 0x000fffff,
-//         selector: selector_index << 3,
-//         // 0b1011: Code, Executed/Read, accessed
-//         // 0b0011: Data, Read/Write, accessed
-//         type_,
-//         present: 1,
-//         dpl: 0,
-//         // If L-bit is set, then D-bit must be cleared.
-//         db: 0,
-//         s: 1,
-//         l: 1,
-//         g: 1,
-//         avl: 0,
-//         unusable: 0,
-//         padding: 0,
-//     }
-// }
-
 pub fn segment_from_gdt(entry: u64, table_index: u8) -> kvm_segment {
     kvm_segment {
         base: get_base(entry),
@@ -475,7 +464,8 @@ fn write_gdt_table(table: &[u64], guest_mem: &GuestMemoryMmap) {
     let boot_gdt_addr = BOOT_GDT_START;
     for (index, entry) in table.iter().enumerate() {
         let addr = guest_mem
-            .checked_offset(boot_gdt_addr, index * std::mem::size_of::<u64>()).unwrap();
+            .checked_offset(boot_gdt_addr, index * std::mem::size_of::<u64>())
+            .unwrap();
         guest_mem.write_obj(*entry, addr).unwrap();
     }
 }
