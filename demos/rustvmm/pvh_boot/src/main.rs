@@ -1,11 +1,12 @@
 use std::fs::File;
 use std::sync::{Arc, Mutex};
+use std::io::{Seek, SeekFrom};
 
 use linux_loader;
 use linux_loader::loader::KernelLoader;
 use linux_loader::loader::elf::PvhBootCapability::PvhEntryPresent;
 use linux_loader::loader::elf::start_info::{
-    hvm_memmap_table_entry, hvm_start_info,
+    hvm_memmap_table_entry, hvm_modlist_entry, hvm_start_info,
 };
 use vm_memory::bitmap::AtomicBitmap;
 use vm_memory::{GuestAddress, Bytes, Address, GuestMemory};
@@ -24,6 +25,9 @@ const KVM_TSS_ADDRESS: u64 = 0xfffb_d000;
 const BOOT_GDT_START: GuestAddress = GuestAddress(0x500);
 /// Address for the hvm_start_info struct used in PVH boot
 const PVH_INFO_START: GuestAddress = GuestAddress(0x6000);
+/// Starting address of array of modules of hvm_modlist_entry type.
+/// Used to enable initrd support using the PVH boot ABI.
+pub const MODLIST_START: GuestAddress = GuestAddress(0x6040);
 /// Address of memory map table used in PVH boot. Can overlap
 /// with the zero page address since they are mutually exclusive.
 const MEMMAP_START: GuestAddress = GuestAddress(0x7000);
@@ -34,7 +38,9 @@ const CMDLINE_START: GuestAddress = GuestAddress(0x20000);
 const XEN_HVM_START_MAGIC_VALUE: u32 = 0x336ec578;
 
 const KERNEL_PATH: &str = "/opt/kata/share/kata-containers/vmlinux-5.19.2-96";
-const DEFAULT_KERNEL_CMDLINE: &str = "console=ttyS0 noapic reboot=k panic=1 pci=off acpi=off";
+const INITRD_PATH: &str = "/root/datas/centos-no-kernel-initramfs.img";
+// const DEFAULT_KERNEL_CMDLINE: &str = "console=ttyS0 noapic reboot=k panic=1 pci=off acpi=off";
+const DEFAULT_KERNEL_CMDLINE: &str = "console=ttyS0 noapic reboot=k panic=1 pci=off acpi=off rdinit=/bin/bash";
 
 fn main() {
     // create vm
@@ -85,6 +91,29 @@ fn main() {
         std::process::exit(1);
     }
     println!("kernel pvh entry addr: 0x{:x}", kernel_entry_addr.0);
+
+    // load initrd
+    let mut initramfs_file = File::open(INITRD_PATH).expect("open initrd file failed");
+    let initramfs_size = match initramfs_file.seek(SeekFrom::End(0)) {
+        Ok(size) => size.try_into().unwrap(),
+        Err(e) => panic!("initramfs file seek to end failed: {:?}", e),
+    };
+    initramfs_file.seek(SeekFrom::Start(0)).unwrap();
+    let first_region = guest_mem.find_region(GuestAddress::new(0)).unwrap();
+    assert!(
+        initramfs_size <= first_region.size(),
+        "too big initrd"
+    );
+    let initrd_addr =
+        GuestAddress((first_region.size() - initramfs_size) as u64 & !(4096 - 1));
+    guest_mem
+        .read_from(
+            initrd_addr,
+            &mut initramfs_file,
+            initramfs_size,
+        )
+        .unwrap();
+    println!("initramfs loaded address = 0x{:x} size = 0x{:x}", initrd_addr.raw_value(), initramfs_size);
 
     // set regs
     let mut regs = vcpu.get_regs().unwrap();
@@ -163,6 +192,17 @@ fn main() {
     start_info.nr_modules = 0;
     start_info.cmdline_paddr = CMDLINE_START.raw_value();
     start_info.memmap_paddr = MEMMAP_START.raw_value();
+
+    let ramdisk_mod = hvm_modlist_entry{
+        paddr: initrd_addr.raw_value(),
+        size: initramfs_size as u64,
+        ..Default::default()
+    };
+    start_info.nr_modules += 1;
+    // 配置initramfs的加载地址
+    start_info.modlist_paddr = MODLIST_START.raw_value();
+    // Write the modlist struct to guest memory.
+    guest_mem.write_obj(ramdisk_mod, MODLIST_START).unwrap();
 
     // Vector to hold the memory maps which needs to be written to guest memory
     // at MEMMAP_START after all of the mappings are recorded.
