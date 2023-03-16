@@ -10,7 +10,7 @@ use linux_loader::loader::elf::start_info::{
 use vm_memory::bitmap::AtomicBitmap;
 use vm_memory::{GuestAddress, Bytes, Address, GuestMemory};
 use kvm_ioctls::{Kvm, VcpuExit};
-use kvm_bindings::{kvm_userspace_memory_region, kvm_segment};
+use kvm_bindings::{kvm_pit_config, kvm_userspace_memory_region, kvm_segment, KVM_PIT_SPEAKER_DUMMY};
 use vm_superio::{serial::SerialEvents, Serial, Trigger};
 use vmm_sys_util::eventfd::EventFd;
 use vmm_sys_util::eventfd::EFD_NONBLOCK;
@@ -34,12 +34,19 @@ const CMDLINE_START: GuestAddress = GuestAddress(0x20000);
 const XEN_HVM_START_MAGIC_VALUE: u32 = 0x336ec578;
 
 const KERNEL_PATH: &str = "/opt/kata/share/kata-containers/vmlinux-5.19.2-96";
-const DEFAULT_KERNEL_CMDLINE: &str = "console=ttyS0 noapic noacpi reboot=k panic=1 pci=off nomodule";
+const DEFAULT_KERNEL_CMDLINE: &str = "console=ttyS0 noapic reboot=k panic=1 pci=off acpi=off";
 
 fn main() {
     // create vm
     let kvm = Kvm::new().expect("open kvm device failed");
     let vm = kvm.create_vm().expect("create vm failed");
+
+    vm.create_irq_chip().unwrap();
+    let pit_config = kvm_pit_config {
+        flags: KVM_PIT_SPEAKER_DUMMY,
+        ..Default::default()
+    };
+    vm.create_pit2(pit_config).unwrap();
 
     let guest_addr = GuestAddress(0x0);
     let guest_mem = GuestMemoryMmap::from_ranges(&[(guest_addr, MEMORY_SIZE)]).unwrap();
