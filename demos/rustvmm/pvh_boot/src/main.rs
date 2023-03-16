@@ -15,6 +15,8 @@ use kvm_bindings::{kvm_pit_config, kvm_userspace_memory_region, kvm_segment, KVM
 use vm_superio::{serial::SerialEvents, Serial, Trigger};
 use vmm_sys_util::eventfd::EventFd;
 use vmm_sys_util::eventfd::EFD_NONBLOCK;
+use vmm_sys_util::poll::{PollContext, PollEvents};
+use vmm_sys_util::terminal::Terminal;
 
 type GuestMemoryMmap = vm_memory::GuestMemoryMmap<AtomicBitmap>;
 
@@ -283,40 +285,72 @@ fn main() {
         DummySerialEvent,
         std::io::stdout(),
     )));
+    let stdio_serial_read = stdio_serial.clone();
 
+    std::thread::spawn(move || {
+        loop {
+            match vcpu.run().expect("run failed") {
+                VcpuExit::Hlt => {
+                    println!("VcpuExit Hlt");
+                    break;
+                }
+                VcpuExit::MmioRead(_, _) => {}
+                VcpuExit::MmioWrite(_, _) => {}
+                VcpuExit::IoIn(addr, data) => {
+                    if addr >= COM1 && addr - COM1 < 8 {
+                        data[0] = stdio_serial_read.lock().unwrap().read((addr - COM1) as u8);
+                    }
+                }
+                VcpuExit::IoOut(addr, data) => {
+                    if addr >= COM1 && addr - COM1 < 8 {
+                        let _ = stdio_serial_read
+                            .lock()
+                            .unwrap()
+                            .write((addr - COM1) as u8, data[0]);
+                    }
+                }
+                VcpuExit::Shutdown => {
+                    println!("KVM_EXIT_SHUTDOWN");
+                    break;
+                }
+                exit_reason => {
+                    println!("KVM_EXIT: {:?}", exit_reason);
+                    break;
+                    // panic!("KVM_EXIT: {:?}", exit_reason);
+                }
+            }
+        }
+    });
+
+    let stdin = std::io::stdin().lock();
+    stdin.set_raw_mode().expect("set terminal raw mode failed");
+
+    let poll: PollContext<u8> = PollContext::new().unwrap();
+    poll.add(&stdin, 1).unwrap();
     loop {
-        match vcpu.run().expect("run failed") {
-            VcpuExit::Hlt => {
-                println!("VcpuExit Hlt");
-                break;
-            }
-            VcpuExit::MmioRead(_, _) => {}
-            VcpuExit::MmioWrite(_, _) => {}
-            VcpuExit::IoIn(addr, data) => {
-                if addr >= COM1 && addr - COM1 < 8 {
-                    data[0] = stdio_serial.lock().unwrap().read((addr - COM1) as u8);
+        let events: PollEvents<u8> = poll.wait().unwrap();
+        for event in events.iter_readable() {
+            match event.token() {
+                1 => {
+                    let mut out = [0u8; 64];
+                    match stdin.read_raw(&mut out[..]) {
+                        Ok(0) => {}
+                        Ok(count) => {
+                            stdio_serial
+                                .lock()
+                                .unwrap()
+                                .enqueue_raw_bytes(&out[..count])
+                                .expect("enqueue bytes failed");
+                        }
+                        Err(e) => {
+                            println!("error while reading stdin: {:?}", e);
+                        }
+                    }
                 }
-            }
-            VcpuExit::IoOut(addr, data) => {
-                if addr >= COM1 && addr - COM1 < 8 {
-                    let _ = stdio_serial
-                        .lock()
-                        .unwrap()
-                        .write((addr - COM1) as u8, data[0]);
-                }
-            }
-            VcpuExit::Shutdown => {
-                println!("KVM_EXIT_SHUTDOWN");
-                break;
-            }
-            exit_reason => {
-                println!("KVM_EXIT: {:?}", exit_reason);
-                break;
-                // panic!("KVM_EXIT: {:?}", exit_reason);
+                _ => unreachable!(),
             }
         }
     }
-
     // std::thread::sleep(std::time::Duration::from_secs(300));
 }
 
