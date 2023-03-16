@@ -41,8 +41,10 @@ const XEN_HVM_START_MAGIC_VALUE: u32 = 0x336ec578;
 
 const KERNEL_PATH: &str = "/opt/kata/share/kata-containers/vmlinux-5.19.2-96";
 const INITRD_PATH: &str = "/root/datas/centos-no-kernel-initramfs.img";
-// const DEFAULT_KERNEL_CMDLINE: &str = "console=ttyS0 noapic reboot=k panic=1 pci=off acpi=off";
+// run /bin/bash as init process, need mount /proc and /sys
+// mount -t proc proc /proc && mount -t sysfs sysfs /sys
 const DEFAULT_KERNEL_CMDLINE: &str = "console=ttyS0 noapic reboot=k panic=1 pci=off acpi=off rdinit=/bin/bash";
+// const DEFAULT_KERNEL_CMDLINE: &str = "console=ttyS0 noapic reboot=k panic=1 pci=off acpi=off";
 
 fn main() {
     // create vm
@@ -278,10 +280,15 @@ fn main() {
     guest_mem
         .write_obj(start_info, start_info_addr).unwrap();
 
-    const COM1: u16 = 0x3f8;
-    let com_evt_1 = EventFdTrigger::new(EventFd::new(EFD_NONBLOCK).unwrap());
+    //        COM Port      IO Port     gsi
+    // ttyS0  COM1          0x3f8       4
+    // ttyS1  COM2          0x2f8       3
+    const COM: u16 = 0x3f8;
+    let com_evt = EventFdTrigger::new(EventFd::new(EFD_NONBLOCK).unwrap());
+    // 必须添加register_irqfd，否则无法输入，COM1的gsi为4
+    vm.register_irqfd(&com_evt.0, 4).unwrap();
     let stdio_serial = Arc::new(Mutex::new(Serial::with_events(
-        com_evt_1.try_clone().unwrap(),
+        com_evt.try_clone().unwrap(),
         DummySerialEvent,
         std::io::stdout(),
     )));
@@ -297,16 +304,16 @@ fn main() {
                 VcpuExit::MmioRead(_, _) => {}
                 VcpuExit::MmioWrite(_, _) => {}
                 VcpuExit::IoIn(addr, data) => {
-                    if addr >= COM1 && addr - COM1 < 8 {
-                        data[0] = stdio_serial_read.lock().unwrap().read((addr - COM1) as u8);
+                    if addr >= COM && addr - COM < 8 {
+                        data[0] = stdio_serial_read.lock().unwrap().read((addr - COM) as u8);
                     }
                 }
                 VcpuExit::IoOut(addr, data) => {
-                    if addr >= COM1 && addr - COM1 < 8 {
+                    if addr >= COM && addr - COM < 8 {
                         let _ = stdio_serial_read
                             .lock()
                             .unwrap()
-                            .write((addr - COM1) as u8, data[0]);
+                            .write((addr - COM) as u8, data[0]);
                     }
                 }
                 VcpuExit::Shutdown => {
