@@ -45,9 +45,9 @@ const KERNEL_PATH: &str = "/opt/kata/share/kata-containers/vmlinux-5.19.2-96";
 const INITRD_PATH: &str = "/root/datas/centos-no-kernel-initramfs.img";
 // run /bin/bash as init process, need mount /proc and /sys
 // mount -t proc proc /proc && mount -t sysfs sysfs /sys
-const DEFAULT_KERNEL_CMDLINE: &str =
-    "console=ttyS0 noapic reboot=k panic=1 pci=off acpi=off rdinit=/bin/bash";
-// const DEFAULT_KERNEL_CMDLINE: &str = "console=ttyS0 noapic reboot=k panic=1 pci=off acpi=off";
+// const DEFAULT_KERNEL_CMDLINE: &str =
+//     "console=ttyS0 noapic reboot=k panic=1 pci=off acpi=off rdinit=/bin/bash";
+const DEFAULT_KERNEL_CMDLINE: &str = "console=ttyS0 noapic reboot=k panic=1 pci=off acpi=off";
 
 fn main() {
     // create vm

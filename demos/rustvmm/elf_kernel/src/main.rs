@@ -31,9 +31,9 @@ const KVM_TSS_ADDRESS: usize = 0xfffb_d000;
 const X86_CR0_PE: u64 = 0x1;
 const X86_CR4_PAE: u64 = 0x20;
 const X86_CR0_PG: u64 = 0x80000000;
-const BOOT_GDT_OFFSET: u64 = 0x500;
 const EFER_LME: u64 = 0x100;
 const EFER_LMA: u64 = 0x400;
+const BOOT_GDT_OFFSET: u64 = 0x500;
 
 const HIMEM_START: u64 = 0x100000;
 const BOOT_CMD_START: u64 = 0x20000;
@@ -42,7 +42,7 @@ const ZERO_PAGE_START: u64 = 0x7000;
 
 const KERNEL_PATH: &str = "/opt/kata/share/kata-containers/vmlinux-5.19.2-96";
 const INITRD_PATH: &str = "/root/datas/centos-no-kernel-initramfs.img";
-const BOOT_CMD: &str = "console=ttyS0 noapic noacpi reboot=k panic=1 pci=off nomodule";
+const BOOT_CMD: &str = "console=ttyS0 noapic reboot=k panic=1 pci=off acpi=off";
 // in /bin/sh can run command
 // exec /init
 // const BOOT_CMD: &str = "console=ttyS0 noapic noacpi reboot=k panic=1 pci=off nomodule rdinit=/bin/sh";
