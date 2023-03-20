@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    io::{Seek, SeekFrom},
+    sync::{Arc, Mutex},
+};
 
 use dbs_arch::gdt;
 use dbs_boot::{
@@ -16,10 +19,9 @@ use linux_loader::{
     configurator::BootConfigurator,
     loader::{load_cmdline, Cmdline, KernelLoader},
 };
-use vm_memory::{Address, GuestAddress, GuestMemory, GuestMemoryMmap};
+use vm_memory::{Address, Bytes, GuestAddress, GuestMemory, GuestMemoryMmap};
 use vm_superio::Serial;
-use vmm_sys_util::eventfd::EventFd;
-use vmm_sys_util::eventfd::EFD_NONBLOCK;
+use vmm_sys_util::eventfd::{EventFd, EFD_NONBLOCK};
 use vmm_sys_util::poll::{PollContext, PollEvents};
 use vmm_sys_util::terminal::Terminal;
 
@@ -39,6 +41,7 @@ const KERNEL_MIN_ALIGNMENT_BYTES: u32 = 0x0100_0000;
 const MEMORY_SIZE: usize = 512 << 20;
 
 const KERNEL_PATH: &str = "/opt/kata/share/kata-containers/vmlinux-5.19.2-96";
+const INITRD_PATH: &str = "/root/datas/centos-no-kernel-initramfs.img";
 const BOOT_CMD: &str = "console=ttyS0 noapic reboot=k panic=1 pci=off acpi=off";
 
 fn main() {
@@ -77,8 +80,6 @@ fn main() {
     let kvm_cpuid = kvm.get_supported_cpuid(KVM_MAX_CPUID_ENTRIES).unwrap();
     vcpu.set_cpuid2(&kvm_cpuid).unwrap();
 
-    dbs_arch::regs::setup_msrs(&vcpu).unwrap();
-
     let gdt_table: [u64; dbs_boot::layout::BOOT_GDT_MAX] = [
         gdt::gdt_entry(0, 0, 0),            // NULL
         gdt::gdt_entry(0xa09b, 0, 0xfffff), // CODE
@@ -105,6 +106,23 @@ fn main() {
             .unwrap()
             .kernel_load;
 
+    let mut initrd_file = std::fs::File::open(INITRD_PATH).expect("open initrd file failed");
+    let initrd_size = match initrd_file.seek(SeekFrom::End(0)) {
+        Ok(size) => size as usize,
+        Err(e) => panic!("initramfs file seek to end failed: {:?}", e),
+    };
+    initrd_file.seek(SeekFrom::Start(0)).unwrap();
+    // Get the target address
+    let initrd_address = dbs_boot::initrd_load_addr(&guest_mem, initrd_size as u64).unwrap();
+    // Load the image into memory
+    guest_mem
+        .read_from(GuestAddress(initrd_address), &mut initrd_file, initrd_size)
+        .unwrap();
+    println!(
+        "initramfs loaded address = 0x{:x} size = 0x{:x}",
+        initrd_address, initrd_size
+    );
+
     // load boot command
     let mut boot_cmdline = Cmdline::new(0x10000);
     boot_cmdline.insert_str(BOOT_CMD).unwrap();
@@ -122,6 +140,8 @@ fn main() {
     boot_params.0.hdr.kernel_alignment = KERNEL_MIN_ALIGNMENT_BYTES;
     boot_params.0.hdr.cmd_line_ptr = dbs_boot::layout::CMDLINE_START as u32;
     boot_params.0.hdr.cmdline_size = 1 + BOOT_CMD.len() as u32;
+    boot_params.0.hdr.ramdisk_image = initrd_address as u32;
+    boot_params.0.hdr.ramdisk_size = initrd_size as u32;
 
     // Add an entry for EBDA itself.
     add_e820_entry(
