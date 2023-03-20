@@ -8,7 +8,7 @@ use dbs_arch::{
     gdt,
 };
 use dbs_boot::{
-    add_e820_entry,
+    add_e820_entry, mptable,
     bootparam::{boot_params, E820_RAM},
     BootParamsWrapper,
 };
@@ -86,6 +86,12 @@ fn main() {
         VmSpec::new(0, 1, 1, 1, 1, VpmuFeatureLevel::Disabled).expect("Error creating vm_spec");
     dbs_arch::cpuid::process_cpuid(&mut cpuid, &cpuid_vm_spec).unwrap();
     vcpu.set_cpuid2(&cpuid).unwrap();
+
+    mptable::setup_mptable(&guest_mem, 1, 1).unwrap();
+
+    dbs_arch::regs::setup_msrs(&vcpu).unwrap();
+    dbs_arch::regs::setup_fpu(&vcpu).unwrap();
+    dbs_arch::interrupts::set_lint(&vcpu).unwrap();
 
     let gdt_table: [u64; dbs_boot::layout::BOOT_GDT_MAX] = [
         gdt::gdt_entry(0, 0, 0),            // NULL
