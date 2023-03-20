@@ -3,7 +3,10 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use dbs_arch::gdt;
+use dbs_arch::{
+    cpuid::{VmSpec, VpmuFeatureLevel},
+    gdt,
+};
 use dbs_boot::{
     add_e820_entry,
     bootparam::{boot_params, E820_RAM},
@@ -77,8 +80,12 @@ fn main() {
 
     // create vcpu and set cpuid
     let vcpu = vm.create_vcpu(0).expect("create vcpu failed");
-    let kvm_cpuid = kvm.get_supported_cpuid(KVM_MAX_CPUID_ENTRIES).unwrap();
-    vcpu.set_cpuid2(&kvm_cpuid).unwrap();
+    let base_cpuid = kvm.get_supported_cpuid(KVM_MAX_CPUID_ENTRIES).unwrap();
+    let mut cpuid = base_cpuid.clone();
+    let cpuid_vm_spec =
+        VmSpec::new(0, 1, 1, 1, 1, VpmuFeatureLevel::Disabled).expect("Error creating vm_spec");
+    dbs_arch::cpuid::process_cpuid(&mut cpuid, &cpuid_vm_spec).unwrap();
+    vcpu.set_cpuid2(&cpuid).unwrap();
 
     let gdt_table: [u64; dbs_boot::layout::BOOT_GDT_MAX] = [
         gdt::gdt_entry(0, 0, 0),            // NULL
