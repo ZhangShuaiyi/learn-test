@@ -45,7 +45,8 @@ const MEMORY_SIZE: usize = 512 << 20;
 
 const KERNEL_PATH: &str = "/opt/kata/share/kata-containers/vmlinux-5.19.2-96";
 const INITRD_PATH: &str = "/root/datas/centos-no-kernel-initramfs.img";
-const BOOT_CMD: &str = "console=ttyS0 noapic reboot=k panic=1 pci=off acpi=off";
+const BOOT_CMD: &str = "console=ttyS0 reboot=k panic=1 pci=off acpi=off";
+// const BOOT_CMD: &str = "console=ttyS0 noapic reboot=k panic=1 pci=off acpi=off";
 
 fn main() {
     let kvm = Kvm::new().expect("open kvm device failed");

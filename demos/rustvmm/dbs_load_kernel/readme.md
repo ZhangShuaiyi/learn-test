@@ -210,3 +210,142 @@ pic[0] irq_base:48
 pic[1] irq_base:56
 ```
 + pic0的vector偏移为48，gsi 4对应的vector=4+48=52
+
+## apic
+取消内核cmdline中的"noapic"参数，hypervisor启动后在Guest中查看/proc/interrupts内容为
+```
+:/# cat /proc/interrupts
+           CPU0
+  0:         55   IO-APIC   0-edge      timer
+  2:          0    XT-PIC      cascade
+  4:        166   IO-APIC   4-edge      ttyS0
+NMI:          0   Non-maskable interrupts
+LOC:       1669   Local timer interrupts
+SPU:          0   Spurious interrupts
+PMI:          0   Performance monitoring interrupts
+IWI:          0   IRQ work interrupts
+RTR:          0   APIC ICR read retries
+RES:          0   Rescheduling interrupts
+CAL:          0   Function call interrupts
+TLB:          0   TLB shootdowns
+TRM:          0   Thermal event interrupts
+HYP:          0   Hypervisor callback interrupts
+ERR:          0
+MIS:          0
+PIN:          0   Posted-interrupt notification event
+NPI:          0   Nested posted-interrupt event
+PIW:          0   Posted-interrupt wakeup event
+```
+在host中通过perf查看kvm的irq相关事件
+```
+perf record -e kvm:kvm_set_irq -e kvm:kvm_pic_set_irq -e kvm:kvm_ioapic_set_irq -e kvm:kvm_apic_accept_irq -e kvm:kvm_inj_virq
+```
+perf script查看结果为
+```
+ dbs_load_kernel 448058 [000] 113108.495865: kvm:kvm_apic_accept_irq: apicid 0 vec 236 (Fixed|edge)
+ dbs_load_kernel 448058 [000] 113108.559888: kvm:kvm_apic_accept_irq: apicid 0 vec 236 (Fixed|edge)
+ kworker/3:1-eve 443349 [003] 113108.708681:         kvm:kvm_set_irq: gsi 4 level 1 source 0
+ kworker/3:1-eve 443349 [003] 113108.708721: kvm:kvm_apic_accept_irq: apicid 0 vec 33 (Fixed|edge)
+ kworker/3:1-eve 443349 [003] 113108.708737:  kvm:kvm_ioapic_set_irq: pin 4 dst 0 vec 33 (Fixed|physical|edge)
+ kworker/3:1-eve 443349 [003] 113108.708740:     kvm:kvm_pic_set_irq: chip 0 pin 4 (edge|masked)
+ kworker/3:1-eve 443349 [003] 113108.708741:         kvm:kvm_set_irq: gsi 4 level 0 source 0
+ kworker/3:1-eve 443349 [003] 113108.708743:  kvm:kvm_ioapic_set_irq: pin 4 dst 0 vec 33 (Fixed|physical|edge)
+ kworker/3:1-eve 443349 [003] 113108.708743:     kvm:kvm_pic_set_irq: chip 0 pin 4 (edge|masked)
+ kworker/0:2-eve 437357 [000] 113108.711751:         kvm:kvm_set_irq: gsi 4 level 1 source 0
+ kworker/0:2-eve 437357 [000] 113108.711758: kvm:kvm_apic_accept_irq: apicid 0 vec 33 (Fixed|edge)
+ kworker/0:2-eve 437357 [000] 113108.711765:  kvm:kvm_ioapic_set_irq: pin 4 dst 0 vec 33 (Fixed|physical|edge)
+ kworker/0:2-eve 437357 [000] 113108.711767:     kvm:kvm_pic_set_irq: chip 0 pin 4 (edge|masked)
+ kworker/0:2-eve 437357 [000] 113108.711768:         kvm:kvm_set_irq: gsi 4 level 0 source 0
+ kworker/0:2-eve 437357 [000] 113108.711769:  kvm:kvm_ioapic_set_irq: pin 4 dst 0 vec 33 (Fixed|physical|edge)
+ kworker/0:2-eve 437357 [000] 113108.711770:     kvm:kvm_pic_set_irq: chip 0 pin 4 (edge|masked)
+ dbs_load_kernel 448058 [000] 113108.815849: kvm:kvm_apic_accept_irq: apicid 0 vec 236 (Fixed|edge)
+ ...
+```
++ gsi对应vector 33
+查看 **__apic_accept_irq** 函数的调用栈
+```
+[root@shyi-centos8-1 rustvmm]# cat | BPFTRACE_STRLEN=144 bpftrace - <<EOF
+kprobe:__apic_accept_irq /arg2 != 236/ {
+  printf("%d %s %s vector:%d level:%d\n", pid, comm, func, arg2, arg3);
+  printf("%s", kstack(perf));
+}
+EOF
+Attaching 1 probe...
+437357 kworker/0:2 __apic_accept_irq vector:33 level:1
+
+        ffffffffc0bc6cd1 __apic_accept_irq+1
+        ffffffffc0bc7480 kvm_irq_delivery_to_apic_fast+496
+        ffffffffc0bcc594 kvm_irq_delivery_to_apic+52
+        ffffffffc0bcb1fc ioapic_service+268
+        ffffffffc0bcb5f3 ioapic_set_irq+195
+        ffffffffc0bcbd51 kvm_ioapic_set_irq+97
+        ffffffffc0b9e910 kvm_set_irq+160
+        ffffffffc0b9d191 irqfd_inject+65
+        ffffffffa00f256a process_one_work+426
+        ffffffffa00f2c10 worker_thread+48
+        ffffffffa00f8516 kthread+278
+        ffffffffa000436f ret_from_fork+31
+448998 kworker/3:2 __apic_accept_irq vector:33 level:1
+
+        ffffffffc0bc6cd1 __apic_accept_irq+1
+        ffffffffc0bc7480 kvm_irq_delivery_to_apic_fast+496
+        ffffffffc0bcc594 kvm_irq_delivery_to_apic+52
+        ffffffffc0bcb1fc ioapic_service+268
+        ffffffffc0bcb5f3 ioapic_set_irq+195
+        ffffffffc0bcbd51 kvm_ioapic_set_irq+97
+        ffffffffc0b9e910 kvm_set_irq+160
+        ffffffffc0b9d191 irqfd_inject+65
+        ffffffffa00f256a process_one_work+426
+        ffffffffa00f2c10 worker_thread+48
+        ffffffffa00f8516 kthread+278
+        ffffffffa000436f ret_from_fork+31
+```
+编写drgn脚本查看kvm.arch.vioapic的内容
+```python
+from drgn.helpers.linux.list import list_for_each_entry
+
+for kvm in list_for_each_entry("struct kvm", prog["vm_list"].address_of_(), "vm_list"):
+    pid = kvm.userspace_pid
+    print("=====>kvm userspace_pid:%d" % (pid.value_()))
+    vioapic = kvm.arch.vioapic
+    print("vioapic base_address:0x%lx" % (vioapic.base_address.value_()))
+    print(vioapic.dev)
+    for i in range(24):
+        entry = vioapic.redirtbl[i]
+        print("===>gsi(%d) vector:%d dest_id:%d" % 
+            (i, entry.fields.vector.value_(), entry.fields.dest_id.value_()))
+```
+drgn脚本输出为
+```
+[root@shyi-centos8-1 rustvmm]# drgn drgn_kvm_vioapic_list.py
+=====>kvm userspace_pid:448058
+(struct kvm_io_device){
+        .ops = (const struct kvm_io_device_ops *)ioapic_mmio_ops+0x0 = 0xffffffffc0bf37d0,
+}
+===>gsi(0) vector:48 dest_id:0
+===>gsi(1) vector:0 dest_id:0
+===>gsi(2) vector:0 dest_id:0
+===>gsi(3) vector:0 dest_id:0
+===>gsi(4) vector:33 dest_id:0
+===>gsi(5) vector:0 dest_id:0
+===>gsi(6) vector:0 dest_id:0
+===>gsi(7) vector:0 dest_id:0
+===>gsi(8) vector:0 dest_id:0
+===>gsi(9) vector:0 dest_id:0
+===>gsi(10) vector:0 dest_id:0
+===>gsi(11) vector:0 dest_id:0
+===>gsi(12) vector:0 dest_id:0
+===>gsi(13) vector:0 dest_id:0
+===>gsi(14) vector:0 dest_id:0
+===>gsi(15) vector:0 dest_id:0
+===>gsi(16) vector:0 dest_id:0
+===>gsi(17) vector:0 dest_id:0
+===>gsi(18) vector:0 dest_id:0
+===>gsi(19) vector:0 dest_id:0
+===>gsi(20) vector:0 dest_id:0
+===>gsi(21) vector:0 dest_id:0
+===>gsi(22) vector:0 dest_id:0
+===>gsi(23) vector:0 dest_id:0
+```
++ 在kvm.arch.vioapic.redirtbl中记录了gsi对应的dest_id(目的cpu)和vector
++ Guest中通过mmio write配置ioapic的 IOREDTBL
