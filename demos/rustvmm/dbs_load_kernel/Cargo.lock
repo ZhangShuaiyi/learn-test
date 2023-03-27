@@ -114,9 +114,11 @@ version = "0.1.0"
 dependencies = [
  "dbs-arch",
  "dbs-boot",
+ "dbs-device",
  "dbs-legacy-devices",
  "kvm-bindings",
  "kvm-ioctls",
+ "libc",
  "linux-loader",
  "vm-memory",
  "vm-superio",

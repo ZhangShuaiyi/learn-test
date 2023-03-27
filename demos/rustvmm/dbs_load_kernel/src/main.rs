@@ -12,7 +12,9 @@ use dbs_boot::{
     bootparam::{boot_params, E820_RAM},
     BootParamsWrapper,
 };
-use dbs_legacy_devices::{EventFdTrigger, SerialDeviceMetrics, SerialEventsWrapper};
+use dbs_legacy_devices::{SerialDevice, ConsoleHandler};
+use dbs_device::device_manager::IoManager;
+use dbs_device::resources::Resource;
 
 use kvm_bindings::{
     kvm_pit_config, kvm_userspace_memory_region, KVM_MAX_CPUID_ENTRIES, KVM_PIT_SPEAKER_DUMMY,
@@ -23,7 +25,6 @@ use linux_loader::{
     loader::{load_cmdline, Cmdline, KernelLoader},
 };
 use vm_memory::{Address, Bytes, GuestAddress, GuestMemory, GuestMemoryMmap};
-use vm_superio::Serial;
 use vmm_sys_util::eventfd::{EventFd, EFD_NONBLOCK};
 use vmm_sys_util::poll::{PollContext, PollEvents};
 use vmm_sys_util::terminal::Terminal;
@@ -225,18 +226,21 @@ fn main() {
     // ttyS0  COM1          0x3f8       4
     // ttyS1  COM2          0x2f8       3
     const COM: u16 = 0x3f8;
-    let com_evt = EventFdTrigger::new(EventFd::new(EFD_NONBLOCK).unwrap());
+    let com_evt = EventFd::new(EFD_NONBLOCK).unwrap();
     // 必须添加register_irqfd，否则无法输入，COM1的gsi为4
     vm.register_irqfd(&com_evt, 4).unwrap();
-    let stdio_serial = Arc::new(Mutex::new(Serial::with_events(
+    let stdio_serial = Arc::new(Mutex::new(SerialDevice::new(
         com_evt.try_clone().unwrap(),
-        SerialEventsWrapper {
-            metrics: Arc::new(SerialDeviceMetrics::default()),
-            buffer_ready_event_fd: None,
-        },
-        std::io::stdout(),
     )));
-    let stdio_serial_read = stdio_serial.clone();
+    stdio_serial.lock().unwrap().set_output_stream(Some(Box::new(std::io::stdout())));
+
+
+    let device_mgr = Arc::new(Mutex::new(IoManager::new()));
+    let resources = [Resource::PioAddressRange {
+        base: COM,
+        size: 0x8,
+    }];
+    device_mgr.lock().unwrap().register_device_io(stdio_serial.clone(), &resources).unwrap();
 
     std::thread::spawn(move || {
         loop {
@@ -249,15 +253,12 @@ fn main() {
                 VcpuExit::MmioWrite(_, _) => {}
                 VcpuExit::IoIn(addr, data) => {
                     if addr >= COM && addr - COM < 8 {
-                        data[0] = stdio_serial_read.lock().unwrap().read((addr - COM) as u8);
+                        device_mgr.lock().unwrap().pio_read(addr, data).unwrap();
                     }
                 }
                 VcpuExit::IoOut(addr, data) => {
                     if addr >= COM && addr - COM < 8 {
-                        let _ = stdio_serial_read
-                            .lock()
-                            .unwrap()
-                            .write((addr - COM) as u8, data[0]);
+                        device_mgr.lock().unwrap().pio_write(addr, data).unwrap();
                     }
                 }
                 VcpuExit::Shutdown => {
@@ -290,7 +291,7 @@ fn main() {
                             stdio_serial
                                 .lock()
                                 .unwrap()
-                                .enqueue_raw_bytes(&out[..count])
+                                .raw_input(&out[..count])
                                 .expect("enqueue bytes failed");
                         }
                         Err(e) => {
