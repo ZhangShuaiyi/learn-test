@@ -16,7 +16,8 @@ use dbs_boot::{
 };
 use dbs_device::device_manager::IoManager;
 // use dbs_device::resources::ResourceConstraint;
-use dbs_device::resources::{DeviceResources, MsiIrqType::GenericMsi, Resource};
+use dbs_device::resources::MsiIrqType::GenericMsi;
+use dbs_device::resources::{DeviceResources, Resource};
 use dbs_legacy_devices::{ConsoleHandler, SerialDevice};
 use dbs_virtio_devices::block::aio::Aio;
 use dbs_virtio_devices::block::{Block, LocalFile, Ufile};
@@ -70,7 +71,7 @@ const MEMORY_SIZE: usize = 512 << 20;
 
 const KERNEL_PATH: &str = "/opt/kata/share/kata-containers/vmlinux-5.19.2-96";
 const INITRD_PATH: &str = "/root/datas/centos-no-kernel-initramfs.img";
-const BLOCK_PATH: &str = "/root/datas/focal-server-cloudimg-amd64.raw";
+const BLOCK_PATH: &str = "/root/datas/empty.raw";
 const BOOT_CMD: &str = "console=ttyS0 reboot=k panic=1 pci=off virtio_mmio.device=8K@0xc0000000:6";
 // const BOOT_CMD: &str = "console=ttyS0 reboot=k panic=1 pci=off acpi=off";
 // const BOOT_CMD: &str = "console=ttyS0 noapic reboot=k panic=1 pci=off acpi=off";
@@ -273,69 +274,72 @@ fn main() {
         .unwrap();
 
     let device_mgr_clone = device_mgr.clone();
-    std::thread::spawn(move || {
-        loop {
-            match vcpu.run() {
-                Ok(exit_reason) => {
-                    match exit_reason {
-                        VcpuExit::Hlt => {
-                            println!("VcpuExit Hlt");
-                            break;
-                        }
-                        VcpuExit::MmioRead(addr, data) => {
-                            device_mgr_clone
-                                .lock()
-                                .unwrap()
-                                .mmio_read(addr, data)
-                                .unwrap();
-                        }
-                        VcpuExit::MmioWrite(addr, data) => {
-                            device_mgr_clone
-                                .lock()
-                                .unwrap()
-                                .mmio_write(addr, data)
-                                .unwrap();
-                        }
-                        VcpuExit::IoIn(addr, data) => {
-                            if addr >= COM && addr - COM < 8 {
+    std::thread::Builder::new()
+        .name(format!("vcpu_{}", 0))
+        .spawn(move || {
+            loop {
+                match vcpu.run() {
+                    Ok(exit_reason) => {
+                        match exit_reason {
+                            VcpuExit::Hlt => {
+                                println!("VcpuExit Hlt");
+                                break;
+                            }
+                            VcpuExit::MmioRead(addr, data) => {
                                 device_mgr_clone
                                     .lock()
                                     .unwrap()
-                                    .pio_read(addr, data)
+                                    .mmio_read(addr, data)
                                     .unwrap();
                             }
-                        }
-                        VcpuExit::IoOut(addr, data) => {
-                            if addr >= COM && addr - COM < 8 {
+                            VcpuExit::MmioWrite(addr, data) => {
                                 device_mgr_clone
                                     .lock()
                                     .unwrap()
-                                    .pio_write(addr, data)
+                                    .mmio_write(addr, data)
                                     .unwrap();
                             }
-                        }
-                        VcpuExit::Shutdown => {
-                            println!("KVM_EXIT_SHUTDOWN");
-                            break;
-                        }
-                        exit_reason => {
-                            println!("KVM_EXIT: {:?}", exit_reason);
-                            break;
-                            // panic!("KVM_EXIT: {:?}", exit_reason);
+                            VcpuExit::IoIn(addr, data) => {
+                                if addr >= COM && addr - COM < 8 {
+                                    device_mgr_clone
+                                        .lock()
+                                        .unwrap()
+                                        .pio_read(addr, data)
+                                        .unwrap();
+                                }
+                            }
+                            VcpuExit::IoOut(addr, data) => {
+                                if addr >= COM && addr - COM < 8 {
+                                    device_mgr_clone
+                                        .lock()
+                                        .unwrap()
+                                        .pio_write(addr, data)
+                                        .unwrap();
+                                }
+                            }
+                            VcpuExit::Shutdown => {
+                                println!("KVM_EXIT_SHUTDOWN");
+                                break;
+                            }
+                            exit_reason => {
+                                println!("KVM_EXIT: {:?}", exit_reason);
+                                break;
+                                // panic!("KVM_EXIT: {:?}", exit_reason);
+                            }
                         }
                     }
+                    Err(e) => match e.errno() {
+                        libc::EAGAIN => {}
+                        libc::EINTR => {}
+                        _ => {
+                            println!("Emulation error: {}", e);
+                            break;
+                        }
+                    },
                 }
-                Err(e) => match e.errno() {
-                    libc::EAGAIN => {}
-                    libc::EINTR => {}
-                    _ => {
-                        println!("Emulation error: {}", e);
-                        break;
-                    }
-                },
             }
-        }
-    });
+        })
+        .unwrap();
 
     let handler = ConsoleEpollHandler {
         device: stdio_serial,
@@ -423,15 +427,6 @@ fn main() {
             Err(e) => eprintln!("Failed to handle events: {e:?}"),
         }
     }
-
-    // let mut event_manager = EventManager::new().expect("epoll_manager: failed create new instance");
-    // event_manager.add_subscriber(Arc::new(Mutex::new(handler)));
-    // loop {
-    //     match event_manager.run_with_timeout(-1) {
-    //         Ok(_) => (),
-    //         Err(e) => eprintln!("Failed to handle events: {e:?}"),
-    //     }
-    // }
 }
 
 struct ConsoleEpollHandler {
