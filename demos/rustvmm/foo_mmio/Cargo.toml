@@ -1,0 +1,23 @@
+[package]
+name = "foo_mmio"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+byteorder = "1.4.3"
+dbs-arch = "0.2.1"
+dbs-boot = "0.3.0"
+dbs-legacy-devices = "0.1.1"
+dbs-device = "0.2.0"
+dbs-utils = "0.2.1"
+#event-manager = "0.3.0"
+linux-loader = "0.6.0"
+libc = "0.2.91"
+kvm-ioctls = "0.12.0"
+kvm-bindings = "0.6.0"
+vm-memory = { version = "0.9.0", features = [ "backend-mmap", "backend-atomic" ] }
+vmm-sys-util = "0.11.0"
+vm-superio = "0.5.0"
+virtio-bindings = "0.1.0"
