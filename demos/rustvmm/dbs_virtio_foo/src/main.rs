@@ -36,7 +36,7 @@ use dbs_utils::epoll_manager::{EpollManager, EventOps, EventSet, Events, MutEven
 use kvm_bindings::{
     kvm_pit_config, kvm_userspace_memory_region, KVM_MAX_CPUID_ENTRIES, KVM_PIT_SPEAKER_DUMMY,
 };
-use kvm_ioctls::{Kvm, VcpuExit};
+use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use linux_loader::{
     configurator::BootConfigurator,
     loader::{load_cmdline, Cmdline, KernelLoader},
@@ -67,6 +67,12 @@ const KERNEL_LOADER_OTHER: u8 = 0xff;
 // Header field: `kernel_alignment`. Alignment unit required by a relocatable kernel.
 const KERNEL_MIN_ALIGNMENT_BYTES: u32 = 0x0100_0000;
 
+//        COM Port      IO Port     gsi
+// ttyS0  COM1          0x3f8       4
+// ttyS1  COM2          0x2f8       3
+const COM: u16 = 0x3f8;
+
+const CPU_NUM: u8 = 2;
 const MEMORY_SIZE: usize = 512 << 20;
 
 const KERNEL_PATH: &str = "/opt/kata/share/kata-containers/vmlinux-5.19.2-96";
@@ -76,9 +82,102 @@ const BOOT_CMD: &str = "console=ttyS0 reboot=k panic=1 pci=off virtio_mmio.devic
 // const BOOT_CMD: &str = "console=ttyS0 reboot=k panic=1 pci=off acpi=off";
 // const BOOT_CMD: &str = "console=ttyS0 noapic reboot=k panic=1 pci=off acpi=off";
 
+struct VM {
+    kvm: Kvm,
+    fd: VmFd,
+    guest_mem: GuestMemoryMmap,
+    device_mgr: Arc<Mutex<IoManager>>,
+    vcpus: Vec<VcpuFd>,
+}
+
+fn create_vcpus(vm: &mut VM) {
+    let mut id: u8 = 0;
+    let base_cpuid = vm.kvm.get_supported_cpuid(KVM_MAX_CPUID_ENTRIES).unwrap();
+    while id < CPU_NUM {
+        let vcpu = vm.fd.create_vcpu(id as u64).expect("create vcpu failed");
+        let mut cpuid = base_cpuid.clone();
+        let cpuid_vm_spec = VmSpec::new(id, CPU_NUM, 1, 1, 1, VpmuFeatureLevel::Disabled)
+            .expect("Error creating vm_spec");
+        dbs_arch::cpuid::process_cpuid(&mut cpuid, &cpuid_vm_spec).unwrap();
+        vcpu.set_cpuid2(&cpuid).unwrap();
+
+        dbs_arch::regs::setup_msrs(&vcpu).unwrap();
+        dbs_arch::regs::setup_fpu(&vcpu).unwrap();
+        dbs_arch::interrupts::set_lint(&vcpu).unwrap();
+
+        let gdt_table: [u64; dbs_boot::layout::BOOT_GDT_MAX] = [
+            gdt::gdt_entry(0, 0, 0),            // NULL
+            gdt::gdt_entry(0xa09b, 0, 0xfffff), // CODE
+            gdt::gdt_entry(0xc093, 0, 0xfffff), // DATA
+            gdt::gdt_entry(0x808b, 0, 0xfffff), // TSS
+        ];
+        let pgtable_addr = dbs_boot::setup_identity_mapping(&vm.guest_mem).unwrap();
+        dbs_arch::regs::setup_sregs(
+            &vm.guest_mem,
+            &vcpu,
+            pgtable_addr,
+            &gdt_table,
+            dbs_boot::layout::BOOT_GDT_OFFSET,
+            dbs_boot::layout::BOOT_IDT_OFFSET,
+        )
+        .unwrap();
+
+        vm.vcpus.push(vcpu);
+        id += 1;
+    }
+}
+
+fn vcpu_run(vcpu: &VcpuFd, device_mgr: &Arc<Mutex<IoManager>>) {
+    loop {
+        match vcpu.run() {
+            Ok(exit_reason) => {
+                match exit_reason {
+                    VcpuExit::Hlt => {
+                        println!("VcpuExit Hlt");
+                        break;
+                    }
+                    VcpuExit::MmioRead(addr, data) => {
+                        device_mgr.lock().unwrap().mmio_read(addr, data).unwrap();
+                    }
+                    VcpuExit::MmioWrite(addr, data) => {
+                        device_mgr.lock().unwrap().mmio_write(addr, data).unwrap();
+                    }
+                    VcpuExit::IoIn(addr, data) => {
+                        if addr >= COM && addr - COM < 8 {
+                            device_mgr.lock().unwrap().pio_read(addr, data).unwrap();
+                        }
+                    }
+                    VcpuExit::IoOut(addr, data) => {
+                        if addr >= COM && addr - COM < 8 {
+                            device_mgr.lock().unwrap().pio_write(addr, data).unwrap();
+                        }
+                    }
+                    VcpuExit::Shutdown => {
+                        println!("KVM_EXIT_SHUTDOWN");
+                        break;
+                    }
+                    exit_reason => {
+                        println!("KVM_EXIT: {:?}", exit_reason);
+                        break;
+                        // panic!("KVM_EXIT: {:?}", exit_reason);
+                    }
+                }
+            }
+            Err(e) => match e.errno() {
+                libc::EAGAIN => {}
+                libc::EINTR => {}
+                _ => {
+                    println!("Emulation error: {}", e);
+                    break;
+                }
+            },
+        }
+    }
+}
+
 fn main() {
     let kvm = Kvm::new().expect("open kvm device failed");
-    let vm = kvm.create_vm().expect("create vm failed");
+    let vm_fd = kvm.create_vm().expect("create vm failed");
 
     // create memory
     let guest_addr = GuestAddress(0x0);
@@ -91,62 +190,59 @@ fn main() {
         userspace_addr: host_addr as u64,
         flags: 0,
     };
+
+    let device_mgr = Arc::new(Mutex::new(IoManager::new()));
+
+    let mut vm = VM {
+        kvm: kvm,
+        fd: vm_fd,
+        guest_mem: guest_mem,
+        device_mgr: device_mgr,
+        vcpus: Vec::new(),
+    };
+
     unsafe {
-        vm.set_user_memory_region(mem_region)
+        vm.fd
+            .set_user_memory_region(mem_region)
             .expect("set user memory region failed")
     };
 
-    vm.set_tss_address(dbs_boot::layout::KVM_TSS_ADDRESS as usize)
+    vm.fd
+        .set_tss_address(dbs_boot::layout::KVM_TSS_ADDRESS as usize)
         .unwrap();
 
     // initialize irq chip and pit
-    vm.create_irq_chip().unwrap();
+    vm.fd.create_irq_chip().unwrap();
     let pit_config = kvm_pit_config {
         flags: KVM_PIT_SPEAKER_DUMMY,
         ..Default::default()
     };
-    vm.create_pit2(pit_config).unwrap();
+    vm.fd.create_pit2(pit_config).unwrap();
 
     // create vcpu and set cpuid
-    let vcpu = vm.create_vcpu(0).expect("create vcpu failed");
-    let base_cpuid = kvm.get_supported_cpuid(KVM_MAX_CPUID_ENTRIES).unwrap();
-    let mut cpuid = base_cpuid.clone();
-    let cpuid_vm_spec =
-        VmSpec::new(0, 1, 1, 1, 1, VpmuFeatureLevel::Disabled).expect("Error creating vm_spec");
-    dbs_arch::cpuid::process_cpuid(&mut cpuid, &cpuid_vm_spec).unwrap();
-    vcpu.set_cpuid2(&cpuid).unwrap();
+    // let vcpu = vm.fd.create_vcpu(0).expect("create vcpu failed");
+    // let base_cpuid = vm.kvm.get_supported_cpuid(KVM_MAX_CPUID_ENTRIES).unwrap();
+    // let mut cpuid = base_cpuid.clone();
+    // let cpuid_vm_spec =
+    //     VmSpec::new(0, 1, 1, 1, 1, VpmuFeatureLevel::Disabled).expect("Error creating vm_spec");
+    // dbs_arch::cpuid::process_cpuid(&mut cpuid, &cpuid_vm_spec).unwrap();
+    // vcpu.set_cpuid2(&cpuid).unwrap();
+    create_vcpus(&mut vm);
 
-    mptable::setup_mptable(&guest_mem, 1, 1).unwrap();
-
-    dbs_arch::regs::setup_msrs(&vcpu).unwrap();
-    dbs_arch::regs::setup_fpu(&vcpu).unwrap();
-    dbs_arch::interrupts::set_lint(&vcpu).unwrap();
-
-    let gdt_table: [u64; dbs_boot::layout::BOOT_GDT_MAX] = [
-        gdt::gdt_entry(0, 0, 0),            // NULL
-        gdt::gdt_entry(0xa09b, 0, 0xfffff), // CODE
-        gdt::gdt_entry(0xc093, 0, 0xfffff), // DATA
-        gdt::gdt_entry(0x808b, 0, 0xfffff), // TSS
-    ];
-    let pgtable_addr = dbs_boot::setup_identity_mapping(&guest_mem).unwrap();
-    dbs_arch::regs::setup_sregs(
-        &guest_mem,
-        &vcpu,
-        pgtable_addr,
-        &gdt_table,
-        dbs_boot::layout::BOOT_GDT_OFFSET,
-        dbs_boot::layout::BOOT_IDT_OFFSET,
-    )
-    .unwrap();
+    mptable::setup_mptable(&vm.guest_mem, CPU_NUM, CPU_NUM).unwrap();
 
     let himem_start = GuestAddress(dbs_boot::layout::HIMEM_START);
 
     // load linux kernel
     let mut kernel_file = std::fs::File::open(KERNEL_PATH).expect("open kernel file failed");
-    let kernel_entry =
-        linux_loader::loader::elf::Elf::load(&guest_mem, None, &mut kernel_file, Some(himem_start))
-            .unwrap()
-            .kernel_load;
+    let kernel_entry = linux_loader::loader::elf::Elf::load(
+        &vm.guest_mem,
+        None,
+        &mut kernel_file,
+        Some(himem_start),
+    )
+    .unwrap()
+    .kernel_load;
 
     let mut initrd_file = std::fs::File::open(INITRD_PATH).expect("open initrd file failed");
     let initrd_size = match initrd_file.seek(SeekFrom::End(0)) {
@@ -155,9 +251,9 @@ fn main() {
     };
     initrd_file.seek(SeekFrom::Start(0)).unwrap();
     // Get the target address
-    let initrd_address = dbs_boot::initrd_load_addr(&guest_mem, initrd_size as u64).unwrap();
+    let initrd_address = dbs_boot::initrd_load_addr(&vm.guest_mem, initrd_size as u64).unwrap();
     // Load the image into memory
-    guest_mem
+    vm.guest_mem
         .read_from(GuestAddress(initrd_address), &mut initrd_file, initrd_size)
         .unwrap();
     println!(
@@ -169,7 +265,7 @@ fn main() {
     let mut boot_cmdline = Cmdline::new(0x10000);
     boot_cmdline.insert_str(BOOT_CMD).unwrap();
     load_cmdline(
-        &guest_mem,
+        &vm.guest_mem,
         GuestAddress(dbs_boot::layout::CMDLINE_START),
         &boot_cmdline,
     )
@@ -194,7 +290,7 @@ fn main() {
     )
     .unwrap();
 
-    let last_addr = guest_mem.last_addr();
+    let last_addr = vm.guest_mem.last_addr();
     let mmio_gap_start = GuestAddress(dbs_boot::layout::MMIO_LOW_START);
     let mmio_gap_end = GuestAddress(dbs_boot::layout::MMIO_LOW_START);
     if last_addr < GuestAddress(dbs_boot::layout::MMIO_LOW_END) {
@@ -236,109 +332,38 @@ fn main() {
             &boot_params,
             GuestAddress(dbs_boot::layout::ZERO_PAGE_START),
         ),
-        &guest_mem,
+        &vm.guest_mem,
     )
     .unwrap();
 
-    dbs_arch::regs::setup_regs(
-        &vcpu,
-        kernel_entry.raw_value(),
-        dbs_boot::layout::BOOT_STACK_POINTER,
-        dbs_boot::layout::BOOT_STACK_POINTER,
-        dbs_boot::layout::ZERO_PAGE_START,
-    )
-    .unwrap();
+    for vcpu in &vm.vcpus {
+        dbs_arch::regs::setup_regs(
+            vcpu,
+            kernel_entry.raw_value(),
+            dbs_boot::layout::BOOT_STACK_POINTER,
+            dbs_boot::layout::BOOT_STACK_POINTER,
+            dbs_boot::layout::ZERO_PAGE_START,
+        )
+        .unwrap();
+    }
 
-    //        COM Port      IO Port     gsi
-    // ttyS0  COM1          0x3f8       4
-    // ttyS1  COM2          0x2f8       3
-    const COM: u16 = 0x3f8;
     let com_evt = EventFd::new(EFD_NONBLOCK).unwrap();
     // 必须添加register_irqfd，否则无法输入，COM1的gsi为4
-    vm.register_irqfd(&com_evt, 4).unwrap();
+    vm.fd.register_irqfd(&com_evt, 4).unwrap();
     let stdio_serial = Arc::new(Mutex::new(SerialDevice::new(com_evt.try_clone().unwrap())));
     stdio_serial
         .lock()
         .unwrap()
         .set_output_stream(Some(Box::new(std::io::stdout())));
 
-    let device_mgr = Arc::new(Mutex::new(IoManager::new()));
     let resources = [Resource::PioAddressRange {
         base: COM,
         size: 0x8,
     }];
-    device_mgr
+    vm.device_mgr
         .lock()
         .unwrap()
         .register_device_io(stdio_serial.clone(), &resources)
-        .unwrap();
-
-    let device_mgr_clone = device_mgr.clone();
-    std::thread::Builder::new()
-        .name(format!("vcpu_{}", 0))
-        .spawn(move || {
-            loop {
-                match vcpu.run() {
-                    Ok(exit_reason) => {
-                        match exit_reason {
-                            VcpuExit::Hlt => {
-                                println!("VcpuExit Hlt");
-                                break;
-                            }
-                            VcpuExit::MmioRead(addr, data) => {
-                                device_mgr_clone
-                                    .lock()
-                                    .unwrap()
-                                    .mmio_read(addr, data)
-                                    .unwrap();
-                            }
-                            VcpuExit::MmioWrite(addr, data) => {
-                                device_mgr_clone
-                                    .lock()
-                                    .unwrap()
-                                    .mmio_write(addr, data)
-                                    .unwrap();
-                            }
-                            VcpuExit::IoIn(addr, data) => {
-                                if addr >= COM && addr - COM < 8 {
-                                    device_mgr_clone
-                                        .lock()
-                                        .unwrap()
-                                        .pio_read(addr, data)
-                                        .unwrap();
-                                }
-                            }
-                            VcpuExit::IoOut(addr, data) => {
-                                if addr >= COM && addr - COM < 8 {
-                                    device_mgr_clone
-                                        .lock()
-                                        .unwrap()
-                                        .pio_write(addr, data)
-                                        .unwrap();
-                                }
-                            }
-                            VcpuExit::Shutdown => {
-                                println!("KVM_EXIT_SHUTDOWN");
-                                break;
-                            }
-                            exit_reason => {
-                                println!("KVM_EXIT: {:?}", exit_reason);
-                                break;
-                                // panic!("KVM_EXIT: {:?}", exit_reason);
-                            }
-                        }
-                    }
-                    Err(e) => match e.errno() {
-                        libc::EAGAIN => {}
-                        libc::EINTR => {}
-                        _ => {
-                            println!("Emulation error: {}", e);
-                            break;
-                        }
-                    },
-                }
-            }
-        })
         .unwrap();
 
     let handler = ConsoleEpollHandler {
@@ -368,7 +393,7 @@ fn main() {
         .unwrap(),
     );
 
-    let vm_fd = Arc::new(vm);
+    let vm_fd = Arc::new(vm.fd);
     let irq_mgr = Arc::new(KvmIrqManager::new(vm_fd.clone()));
     {
         // let use_shared_irq = false;
@@ -402,7 +427,7 @@ fn main() {
         resources.append(msi_resource);
         let virtio_dev = match MmioV2Device::new(
             vm_fd.clone(),
-            GuestMemoryAtomic::new(guest_mem.clone()),
+            GuestMemoryAtomic::new(vm.guest_mem.clone()),
             irq_mgr.clone(),
             blk_device,
             resources.clone(),
@@ -414,18 +439,37 @@ fn main() {
                 return;
             }
         };
-        device_mgr
+        vm.device_mgr
             .lock()
             .unwrap()
             .register_device_io(virtio_dev, &resources)
             .unwrap();
     }
 
+    let mut handlers = Vec::new();
+    for (id, vcpu) in vm.vcpus.drain(..).enumerate() {
+        let device_mgr_clone = vm.device_mgr.clone();
+        let handler = std::thread::Builder::new()
+            .name(format!("vcpu_{}", id))
+            .spawn(move || {
+                vcpu_run(&vcpu, &device_mgr_clone);
+            })
+            .unwrap();
+        handlers.push(handler);
+    }
+    // println!("============vcpus:{}", vm.vcpus.len());
+
     loop {
         match event_manager.handle_events(-1) {
             Ok(_) => (),
-            Err(e) => eprintln!("Failed to handle events: {e:?}"),
+            Err(e) => {
+                eprintln!("Failed to handle events: {e:?}");
+                break;
+            }
         }
+    }
+    for handler in handlers {
+        handler.join().unwrap();
     }
 }
 
