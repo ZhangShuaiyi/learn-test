@@ -1,0 +1,23 @@
+[package]
+name = "dbstest"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "^1.0"
+env_logger = "0.10.0"
+crossbeam-channel = "0.5.6"
+log = "0.4.14"
+slog = "2.7.0"
+slog-term = "2.7.0"
+slog-async = "2.7.0"
+slog-scope = "4.4.0"
+libc = ">=0.2.39"
+vmm-sys-util = "0.11.0"
+dbs-utils = "0.2.1"
+dragonball = { path = "/root/tools/kata-containers-org/src/dragonball", features = ["atomic-guest-memory", "virtio-vsock", "hotplug", "virtio-blk", "virtio-net", "virtio-fs", "virtio-mem", "virtio-balloon", "dbs-upcall"] }
+
+[features]
+cloud-hypervisor = []
