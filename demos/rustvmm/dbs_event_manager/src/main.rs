@@ -54,13 +54,19 @@ const KERNEL_MIN_ALIGNMENT_BYTES: u32 = 0x0100_0000;
 
 const MEMORY_SIZE: usize = 512 << 20;
 
-const KERNEL_PATH: &str = "/opt/kata/share/kata-containers/vmlinux-5.19.2-96";
+// const KERNEL_PATH: &str = "/opt/kata/share/kata-containers/vmlinux-5.19.2-96";
+const KERNEL_PATH: &str = "/root/datas/vmlinux-5.19-96";
 const INITRD_PATH: &str = "/root/datas/centos-no-kernel-initramfs.img";
 const BOOT_CMD: &str = "console=ttyS0 reboot=k panic=1 pci=off acpi=off";
 // const BOOT_CMD: &str = "console=ttyS0 noapic reboot=k panic=1 pci=off acpi=off";
 
 fn main() {
     let kvm = Kvm::new().expect("open kvm device failed");
+    // 创建vm，内核会创建struct kvm，并加入vm_list链表，此时kvm.userspace_pid为进程pid
+    // #遍历vm_list链表
+    // >>> for kvm in list_for_each_entry("struct kvm", prog["vm_list"].address_of_(), "vm_list"): print('kvm:0x%lx' % (kvm))
+    // >>> prog.type('struct kvm') #查看kvm结构体
+    // >>> kvm = Object(prog, 'struct kvm', address=0xffffad3084029000) #根据地址查看变量
     let vm = kvm.create_vm().expect("create vm failed");
 
     // create memory
@@ -74,7 +80,9 @@ fn main() {
         userspace_addr: host_addr as u64,
         flags: 0,
     };
+    println!("====host_addr:0x{:x}", host_addr as u64);
     unsafe {
+        // 更新kvm.memslots[0].memslots[0]
         vm.set_user_memory_region(mem_region)
             .expect("set user memory region failed")
     };
@@ -83,26 +91,32 @@ fn main() {
         .unwrap();
 
     // initialize irq chip and pit
+    // 初始化kvm.arch.vpic和kvm.arch.vioapic
     vm.create_irq_chip().unwrap();
     let pit_config = kvm_pit_config {
         flags: KVM_PIT_SPEAKER_DUMMY,
         ..Default::default()
     };
+    // 初始化kvm.arch.vpit
     vm.create_pit2(pit_config).unwrap();
 
     // create vcpu and set cpuid
+    // 初始化kvm.vcpus[0]
     let vcpu = vm.create_vcpu(0).expect("create vcpu failed");
     let base_cpuid = kvm.get_supported_cpuid(KVM_MAX_CPUID_ENTRIES).unwrap();
     let mut cpuid = base_cpuid.clone();
     let cpuid_vm_spec =
         VmSpec::new(0, 1, 1, 1, 1, VpmuFeatureLevel::Disabled).expect("Error creating vm_spec");
     dbs_arch::cpuid::process_cpuid(&mut cpuid, &cpuid_vm_spec).unwrap();
+    // 更新kvm.vcpus[0].arch.cpuid_entries和kvm.vcpus[0].arch.cpuid_nent
     vcpu.set_cpuid2(&cpuid).unwrap();
 
+    // 配置mptable
     mptable::setup_mptable(&guest_mem, 1, 1).unwrap();
 
     dbs_arch::regs::setup_msrs(&vcpu).unwrap();
     dbs_arch::regs::setup_fpu(&vcpu).unwrap();
+    // 更新kvm.vcpus[0].arch.apic
     dbs_arch::interrupts::set_lint(&vcpu).unwrap();
 
     let gdt_table: [u64; dbs_boot::layout::BOOT_GDT_MAX] = [
@@ -112,6 +126,7 @@ fn main() {
         gdt::gdt_entry(0x808b, 0, 0xfffff), // TSS
     ];
     let pgtable_addr = dbs_boot::setup_identity_mapping(&guest_mem).unwrap();
+    // 通过vmcs_writeX更新vcpu的vmcs设置sreg
     dbs_arch::regs::setup_sregs(
         &guest_mem,
         &vcpu,
@@ -126,10 +141,15 @@ fn main() {
 
     // load linux kernel
     let mut kernel_file = std::fs::File::open(KERNEL_PATH).expect("open kernel file failed");
+    // 通过 "readelf -h /root/datas/vmlinux-5.19-96" 查看到 Entry point address 地址为0x1000000
+    // 通过 "objdump -t /root/datas/vmlinux-5.19-96 | grep 1000000" 查看到0x1000000为phys_startup_64
+    // phys_startup_64定义为 "phys_startup_64 = ABSOLUTE(startup_64 - LOAD_OFFSET);"
     let kernel_entry =
         linux_loader::loader::elf::Elf::load(&guest_mem, None, &mut kernel_file, Some(himem_start))
             .unwrap()
             .kernel_load;
+
+    println!("===kernel_entry:0x{:x}", kernel_entry.raw_value());
 
     let mut initrd_file = std::fs::File::open(INITRD_PATH).expect("open initrd file failed");
     let initrd_size = match initrd_file.seek(SeekFrom::End(0)) {
@@ -223,6 +243,7 @@ fn main() {
     )
     .unwrap();
 
+    // 更新vcpu的rip寄存器
     dbs_arch::regs::setup_regs(
         &vcpu,
         kernel_entry.raw_value(),
@@ -238,6 +259,8 @@ fn main() {
     const COM: u16 = 0x3f8;
     let com_evt = EventFd::new(EFD_NONBLOCK).unwrap();
     // 必须添加register_irqfd，否则无法输入，COM1的gsi为4
+    // 注册irqfd将struct kvm_kernel_irqfd添加到kvm.irqfds.items链表
+    // 通过 "perf record -e kvm:kvm_set_irq -e kvm:kvm_pic_set_irq -e kvm:kvm_ioapic_set_irq -e kvm:kvm_apic_accept_irq -e kvm:kvm_inj_virq" 查看中断注入情况
     vm.register_irqfd(&com_evt, 4).unwrap();
     let stdio_serial = Arc::new(Mutex::new(SerialDevice::new(com_evt.try_clone().unwrap())));
     stdio_serial
