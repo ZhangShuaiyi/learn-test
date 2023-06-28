@@ -75,7 +75,7 @@ const COM: u16 = 0x3f8;
 const CPU_NUM: u8 = 2;
 const MEMORY_SIZE: usize = 512 << 20;
 
-const KERNEL_PATH: &str = "/opt/kata/share/kata-containers/vmlinux-5.19.2-96";
+const KERNEL_PATH: &str = "/opt/kata/share/kata-containers/vmlinux.container";
 const INITRD_PATH: &str = "/root/datas/centos-no-kernel-initramfs.img";
 const BLOCK_PATH: &str = "/root/datas/empty.raw";
 const BOOT_CMD: &str = "console=ttyS0 reboot=k panic=1 pci=off virtio_mmio.device=8K@0xc0000000:6";

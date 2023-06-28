@@ -40,7 +40,7 @@ const BOOT_CMD_START: u64 = 0x20000;
 const BOOT_STACK_POINTER: u64 = 0x8ff0;
 const ZERO_PAGE_START: u64 = 0x7000;
 
-const KERNEL_PATH: &str = "/opt/kata/share/kata-containers/vmlinux-5.19.2-96";
+const KERNEL_PATH: &str = "/opt/kata/share/kata-containers/vmlinux.container";
 const INITRD_PATH: &str = "/root/datas/centos-no-kernel-initramfs.img";
 const BOOT_CMD: &str = "console=ttyS0 noapic reboot=k panic=1 pci=off acpi=off";
 // in /bin/sh can run command
