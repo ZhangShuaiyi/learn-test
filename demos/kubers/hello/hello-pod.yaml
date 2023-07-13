@@ -1,0 +1,43 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hello-sa
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: hello
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "watch", "list", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: hello
+roleRef: # points to the ClusterRole
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: hello # name of ClusterRole
+subjects: # points to the ServiceAccount
+- kind: ServiceAccount
+  name: hello-sa # service account to bind to
+  namespace: default # ns of service account
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hello-pod
+  namespace: default
+spec:
+  containers:
+  - image: myregistry.local:5000/local/hello:v1
+    name: hello
+  serviceAccountName: hello-sa
+  restartPolicy: Never
+  nodeSelector:
+    kubernetes.io/hostname: edge2
+  terminationGracePeriodSeconds: 6
