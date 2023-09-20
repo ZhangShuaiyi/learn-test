@@ -1,12 +1,17 @@
 use clap::Parser;
 #[cfg(not(target_env = "musl"))]
 use libc::c_ulong;
+use std::fs;
 use std::fs::File;
 use std::os::fd::AsRawFd;
 use std::path::Path;
 
 use linux_raw_sys::general::fsxattr;
 use linux_raw_sys::ioctl;
+
+extern "C" {
+    fn strverscmp(cs: *const i8, ct: *const i8) -> i32;
+}
 
 #[allow(dead_code)]
 #[allow(nonstandard_style)]
@@ -73,25 +78,41 @@ fn main() {
     }
     println!("{} fsx_projid:{}", path.display(), attr.fsx_projid);
 
-    let cmd = QCMD(dqblk_xfs_util::Q_XGETNEXTQUOTA, quota_binding::PRJQUOTA);
-    // let mut quota: dqblk_xfs_binding::fs_disk_quota = unsafe { mem::zeroed() };
-    let mut quota = dqblk_xfs_binding::fs_disk_quota {
-        ..Default::default()
-    };
+    let mut kernel = fs::read_to_string("/proc/sys/kernel/osrelease").unwrap();
+    kernel.pop();
+    let min_version = String::from("4.6.0");
     let ret = unsafe {
-        libc::quotactl(
-            cmd as i32,
-            args.block.as_ptr() as *const i8,
-            1,
-            &mut quota as *mut dqblk_xfs_binding::fs_disk_quota as *mut i8,
+        strverscmp(
+            kernel.as_ptr() as *const i8,
+            min_version.as_ptr() as *const i8,
         )
     };
     if ret < 0 {
-        println!("libc::quotactl failed:{}", ret);
-        return;
+        println!("linux kernel:{kernel} less than {min_version} may not support Q_XGETNEXTQUOTA");
     }
-    println!(
-        "{} d_id:{} d_blk_hardlimit:{}",
-        args.block, quota.d_id, quota.d_blk_hardlimit
-    );
+
+    let cmd = QCMD(dqblk_xfs_util::Q_XGETNEXTQUOTA, quota_binding::PRJQUOTA);
+    let mut id = 0;
+    loop {
+        // let mut quota: dqblk_xfs_binding::fs_disk_quota = unsafe { mem::zeroed() };
+        let mut quota = dqblk_xfs_binding::fs_disk_quota {
+            ..Default::default()
+        };
+        let ret = unsafe {
+            libc::quotactl(
+                cmd as i32,
+                args.block.as_ptr() as *const i8,
+                id,
+                &mut quota as *mut dqblk_xfs_binding::fs_disk_quota as *mut i8,
+            )
+        };
+        if ret < 0 {
+            break;
+        }
+        id = quota.d_id as i32 + 1;
+        println!(
+            "{} d_id:{:<5} d_blk_hardlimit:{}",
+            args.block, quota.d_id, quota.d_blk_hardlimit
+        );
+    }
 }
