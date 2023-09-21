@@ -1,0 +1,16 @@
+---
+- import_tasks: files.yml
+
+- name: install k3s
+  environment:
+    INSTALL_K3S_SKIP_DOWNLOAD: "true"
+    INSTALL_K3S_SELINUX_WARN: "true"
+    INSTALL_K3S_SKIP_START: "true"
+    INSTALL_K3S_EXEC: "server"
+  script: "{{ role_path }}/files/install.sh"
+
+- name: start k3s.service
+  systemd:
+    name: k3s
+    daemon_reload: yes
+    state: restarted

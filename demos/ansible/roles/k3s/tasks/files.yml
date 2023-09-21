@@ -1,0 +1,27 @@
+---
+- name: copy k3s binary
+  copy:
+    src: /root/datas/bins/k3s_1.25.7/k3s
+    dest: /usr/local/bin
+    mode: '0755'
+
+- name: Ensures k3s image dir exists
+  file: path=/var/lib/rancher/k3s/agent/images/ state=directory
+
+- name: copy k3s airgap image 
+  copy:
+    src: /root/datas/bins/k3s_1.25.7/k3s-airgap-images.tar.gz
+    dest: /var/lib/rancher/k3s/agent/images/
+
+- name: Ensures k3s registries dir exists
+  file: path=/etc/rancher/k3s/ state=directory
+
+- name: copy k3s registries
+  template:
+    src: registries.yaml.j2
+    dest: /etc/rancher/k3s/registries.yaml
+
+- name: gen k3s config.yaml
+  template:
+    src: k3s_config.yml.j2
+    dest: "/etc/rancher/k3s/config.yaml"

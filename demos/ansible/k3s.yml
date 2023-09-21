@@ -1,0 +1,14 @@
+---
+- name: prepare vm
+  hosts: k3s
+  gather_facts: false
+  roles:
+  - role: vm/prepare
+
+- name: install k3s
+  hosts: k3s
+  gather_facts: false
+  roles:
+  - role: k3s
+  vars:
+  - k3s_role_action: all_in_one
