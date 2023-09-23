@@ -1,0 +1,14 @@
+{
+    "metadata": {
+        "name": "critest-sandbox",
+        "namespace": "default",
+        "attempt": 1,
+        "uid": "hdishd83djaidwnduwk28bcsb"
+    },
+    "labels": {
+        "io.kubernetes.pod.name": "fake-critest-sandbox"
+    },
+    "log_directory": "/tmp",
+    "linux": {
+    }
+}
