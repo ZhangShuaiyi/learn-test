@@ -82,25 +82,21 @@ int modify_qp_to_rts (struct ibv_qp *qp, uint32_t target_qp_num, uint16_t target
 	    .max_dest_rd_atomic = 1,
 	    .min_rnr_timer      = 12,
 	    // .ah_attr.is_global  = 0,
-        .ah_attr.is_global  = 1,
-        .ah_attr.grh.hop_limit  = 1,
-        .ah_attr.grh.sgid_index = 1,
-        .ah_attr.grh.dgid   = gid,
 	    .ah_attr.dlid       = target_lid,
 	    .ah_attr.sl         = 0,
 	    .ah_attr.src_path_bits = 0,
 	    .ah_attr.port_num      = IB_PORT,
 	};
 
-    // if (is_roce == 1) {
-    //     qp_attr.ah_attr.is_global = 1;
-    //     qp_attr.ah_attr.grh.hop_limit = 0xFF;
-    //     qp_attr.ah_attr.grh.dgid = gid;
-    //     qp_attr.ah_attr.grh.sgid_index = 1;
-    // } else {
-    //     qp_attr.ah_attr.is_global = 0;
-    //     // qp_attr.ah_attr.dlid = target_lid;
-    // }
+    if (is_roce == 1) {
+        qp_attr.ah_attr.is_global = 1;
+        qp_attr.ah_attr.grh.hop_limit = 0xFF;
+        qp_attr.ah_attr.grh.dgid = gid;
+        qp_attr.ah_attr.grh.sgid_index = 1;
+    } else {
+        qp_attr.ah_attr.is_global = 0;
+        // qp_attr.ah_attr.dlid = target_lid;
+    }
 
 	ret = ibv_modify_qp(qp, &qp_attr,
 			    IBV_QP_STATE | IBV_QP_AV |
