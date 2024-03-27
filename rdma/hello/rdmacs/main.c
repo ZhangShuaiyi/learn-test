@@ -3,8 +3,6 @@
 #include <malloc.h>
 #include <infiniband/verbs.h>
 
-static int is_roce = 1;
-
 #define IB_PORT     1
 #define MSG_SIZE    64
 
@@ -81,21 +79,21 @@ int modify_qp_to_rts (struct ibv_qp *qp, uint32_t target_qp_num, uint16_t target
 	    .rq_psn             = 0,
 	    .max_dest_rd_atomic = 1,
 	    .min_rnr_timer      = 12,
-	    // .ah_attr.is_global  = 0,
+	    .ah_attr.is_global  = 0,
 	    .ah_attr.dlid       = target_lid,
 	    .ah_attr.sl         = 0,
 	    .ah_attr.src_path_bits = 0,
 	    .ah_attr.port_num      = IB_PORT,
 	};
 
-    if (is_roce == 1) {
+    if (target_lid == 0) {
+        printf("Change QP state to RTR use gid target_qp_num:%d\n", target_qp_num);
         qp_attr.ah_attr.is_global = 1;
         qp_attr.ah_attr.grh.hop_limit = 0xFF;
         qp_attr.ah_attr.grh.dgid = gid;
         qp_attr.ah_attr.grh.sgid_index = 1;
     } else {
-        qp_attr.ah_attr.is_global = 0;
-        // qp_attr.ah_attr.dlid = target_lid;
+        printf("Change QP state to RTR use lid target_qp_num:%d\n", target_qp_num);
     }
 
 	ret = ibv_modify_qp(qp, &qp_attr,
@@ -128,11 +126,11 @@ int modify_qp_to_rts (struct ibv_qp *qp, uint32_t target_qp_num, uint16_t target
     return 0;
 }
 
-int run_server(struct ibv_qp *qp, uint32_t qp_num, uint16_t lid, union ibv_gid gid) {
+int setup_server(struct ibv_qp *qp, uint32_t qp_num, uint16_t lid, union ibv_gid gid) {
     uint16_t remote_lid;
     uint32_t remote_qp_num;
     union ibv_gid remote_gid;
-    printf("Wait to input remote qp_num and lid\n");
+    printf("Wait to input remote qp_num, lid and gid\n");
     fscanf(stdin, "%d %d %02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x", &remote_qp_num, &remote_lid,
             &remote_gid.raw[0], &remote_gid.raw[1], &remote_gid.raw[2], &remote_gid.raw[3],
             &remote_gid.raw[4], &remote_gid.raw[5], &remote_gid.raw[6], &remote_gid.raw[7],
@@ -147,7 +145,7 @@ int run_server(struct ibv_qp *qp, uint32_t qp_num, uint16_t lid, union ibv_gid g
     return 0;
 }
 
-int run_client(struct ibv_qp *qp, uint32_t qp_num, uint16_t lid, union ibv_gid gid) {
+int setup_client(struct ibv_qp *qp, uint32_t qp_num, uint16_t lid, union ibv_gid gid) {
     uint16_t remote_lid;
     uint32_t remote_qp_num;
     union ibv_gid remote_gid;
@@ -156,17 +154,12 @@ int run_client(struct ibv_qp *qp, uint32_t qp_num, uint16_t lid, union ibv_gid g
             gid.raw[4], gid.raw[5], gid.raw[6], gid.raw[7],
             gid.raw[8], gid.raw[9], gid.raw[10], gid.raw[11],
             gid.raw[12], gid.raw[13], gid.raw[14], gid.raw[15]);
-    printf("Wait to input remote qp_num and lid\n");
+    printf("Wait to input remote qp_num, lid and gid\n");
     fscanf(stdin, "%d %d %02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x", &remote_qp_num, &remote_lid,
             &remote_gid.raw[0], &remote_gid.raw[1], &remote_gid.raw[2], &remote_gid.raw[3],
             &remote_gid.raw[4], &remote_gid.raw[5], &remote_gid.raw[6], &remote_gid.raw[7],
             &remote_gid.raw[8], &remote_gid.raw[9], &remote_gid.raw[10], &remote_gid.raw[11],
             &remote_gid.raw[12], &remote_gid.raw[13], &remote_gid.raw[14], &remote_gid.raw[15]);
-    // printf("%d %d %02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x\n", qp_num, lid, 
-    //         remote_gid.raw[0], remote_gid.raw[1], remote_gid.raw[2], remote_gid.raw[3],
-    //         remote_gid.raw[4], remote_gid.raw[5], remote_gid.raw[6], remote_gid.raw[7],
-    //         remote_gid.raw[8], remote_gid.raw[9], remote_gid.raw[10], remote_gid.raw[11],
-    //         remote_gid.raw[12], remote_gid.raw[13], remote_gid.raw[14], remote_gid.raw[15]);
     modify_qp_to_rts(qp, remote_qp_num, remote_lid, remote_gid);
     return 0;
 }
@@ -206,8 +199,8 @@ int main(int argc, char *argv[]) {
         .send_cq = cq,
         .recv_cq = cq,
         .cap = {
-            .max_send_wr = dev_attr.max_qp_wr,
-            .max_recv_wr = dev_attr.max_qp_wr,
+            .max_send_wr = 2,
+            .max_recv_wr = 2,
             .max_send_sge = 1,
             .max_recv_sge = 1,
         },
@@ -221,18 +214,19 @@ int main(int argc, char *argv[]) {
     ret = ibv_query_port(ctx, IB_PORT, &port_attr);
     CHECK(ret == 0, "ibv_query_port failed");
     // Get gid (roce need gid)
+    // https://www.rdmamojo.com/2012/08/02/ibv_query_gid/
     union ibv_gid gid;
     ret = ibv_query_gid(ctx, IB_PORT, 1, &gid);
     CHECK(ret == 0, "ibv_query_gid fail");
     // printf("device port info: qp_num=%d lid=%d\n", qp->qp_num, port_attr.lid);
     // Connect QP
     if (argc < 2) {
-        run_server(qp, qp->qp_num, port_attr.lid, gid);
+        setup_server(qp, qp->qp_num, port_attr.lid, gid);
     } else {
-        run_client(qp, qp->qp_num, port_attr.lid, gid);
+        setup_client(qp, qp->qp_num, port_attr.lid, gid);
     }
 
-
+    ibv_destroy_qp(qp);
     ibv_close_device(ctx);
     return 0;
 }
