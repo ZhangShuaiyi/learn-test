@@ -1,0 +1,15 @@
+kind: Pod
+apiVersion: v1
+metadata:
+  generateName: 001-besteffort-
+spec:
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 6
+  nodeSelector:
+    stress-test: ""
+    # kubernetes.io/hostname: worker-1
+  containers:
+  - image: polinux/stress:latest
+    imagePullPolicy: IfNotPresent
+    command: ["stress", "--cpu", "5"]
+    name: stress-cpu

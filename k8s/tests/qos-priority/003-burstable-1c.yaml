@@ -1,0 +1,19 @@
+kind: Pod
+apiVersion: v1
+metadata:
+  generateName: 003-burstable-1c-
+spec:
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 6
+  nodeSelector:
+    stress-test: ""
+    # kubernetes.io/hostname: worker-1
+  containers:
+  - image: polinux/stress:latest
+    imagePullPolicy: IfNotPresent
+    command: ["stress", "--cpu", "5"]
+    name: stress-cpu
+    resources:
+      requests:
+        memory: "512Mi"
+        cpu: 1
