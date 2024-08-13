@@ -1,9 +1,11 @@
 kind: Pod
 apiVersion: v1
 metadata:
-  generateName: 001-besteffort-
+  generateName: 006-besteffort-node-critical-
 spec:
   restartPolicy: Never
+  priority: 2000001000
+  priorityClassName: system-node-critical
   terminationGracePeriodSeconds: 6
   nodeSelector:
     stress-test: ""
@@ -11,5 +13,5 @@ spec:
   containers:
   - image: polinux/stress:latest
     imagePullPolicy: IfNotPresent
-    command: ["stress", "--cpu", "7"]
+    command: ["stress", "--cpu", "5"]
     name: stress-cpu

@@ -11,7 +11,7 @@ spec:
   containers:
   - image: polinux/stress:latest
     imagePullPolicy: IfNotPresent
-    command: ["stress", "--cpu", "5"]
+    command: ["stress", "--cpu", "7"]
     name: stress-cpu
     resources:
       requests:
