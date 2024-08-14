@@ -3,6 +3,7 @@ module csi-plugin-reg
 go 1.22.2
 
 require (
+	github.com/container-storage-interface/spec v1.10.0
 	google.golang.org/grpc v1.65.0
 	k8s.io/klog v1.0.0
 	k8s.io/kubelet v0.31.0
