@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-dep-hpa-cpu
+spec:
+  selector:
+    matchLabels:
+      app: demo-dep-hpa-cpu
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: demo-dep-hpa-cpu
+    spec:
+      containers:
+      - name: demo-dep-hpa-cpu-nginx
+        image: m.daocloud.io/docker.io/library/nginx:alpine3.20
+        ports:
+        - containerPort: 80
+        resources:
+          limits:
+            cpu: 100m
+          requests:
+            cpu: 50m
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-dep-hpa-cpu
+  labels:
+    app: demo-dep-hpa-cpu
+spec:
+  ports:
+  - port: 80
+  selector:
+    app: demo-dep-hpa-cpu
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: demo-dep-hpa-cpu
+spec:
+  maxReplicas: 5
+  minReplicas: 1
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: demo-dep-hpa-cpu
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 80

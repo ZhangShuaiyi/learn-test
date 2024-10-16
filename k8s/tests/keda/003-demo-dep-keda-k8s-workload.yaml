@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-dep-keda-k8s-workload
+spec:
+  selector:
+    matchLabels:
+      app: demo-dep-keda-k8s-workload
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: demo-dep-keda-k8s-workload
+    spec:
+      containers:
+      - name: demo-dep-keda-k8s-workload-nginx
+        image: m.daocloud.io/docker.io/library/nginx:alpine3.20
+        ports:
+        - containerPort: 80
+        resources:
+          limits:
+            cpu: 100m
+          requests:
+            cpu: 50m
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-dep-keda-k8s-workload
+  labels:
+    app: demo-dep-keda-k8s-workload
+spec:
+  ports:
+  - port: 80
+  selector:
+    app: demo-dep-keda-k8s-workload
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: demo-dep-keda-k8s-workload
+spec:
+  #idleReplicaCount: 0
+  #minReplicaCount: 1
+  #minReplicaCount: 0
+  maxReplicaCount: 5
+  scaleTargetRef:
+    name: demo-dep-keda-k8s-workload
+    apiVersion: apps/v1
+    kind: Deployment
+  triggers:
+  - type: kubernetes-workload
+    metadata:
+      podSelector: 'app=test-dep'
+      value: "1"

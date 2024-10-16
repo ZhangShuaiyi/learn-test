@@ -1,0 +1,24 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-dep
+spec:
+  selector:
+    matchLabels:
+      app: test-dep
+  replicas: 3
+  template:
+    metadata:
+      labels:
+        app: test-dep
+    spec:
+      containers:
+      - name: test-dep-nginx
+        image: m.daocloud.io/docker.io/library/nginx:alpine3.20
+        ports:
+        - containerPort: 80
+        resources:
+          limits:
+            cpu: 100m
+          requests:
+            cpu: 50m
