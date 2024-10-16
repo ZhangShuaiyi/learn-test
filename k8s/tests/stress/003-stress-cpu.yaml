@@ -1,0 +1,29 @@
+kind: Pod
+apiVersion: v1
+metadata:
+  labels:
+    test: stress-cpu
+  generateName: stress-cpu-
+spec:
+  restartPolicy: Never
+  containers:
+  - image: artifacts.lenovo.com/cybertron-dev/stress:latest
+    imagePullPolicy: IfNotPresent
+    command:
+    - stress
+    # 测试cpu进程数目
+    - --cpu
+    - "1"
+    # 测试时间
+    - --timeout
+    - 120s
+    name: stress-cpu
+    resources:
+      # 容器资源申请量
+      requests:
+        memory: "1Gi"
+        cpu: 1
+      # 容器资源限制量
+      # limits:
+      #   memory: "1Gi"
+      #   cpu: 1

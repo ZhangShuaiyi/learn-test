@@ -1,0 +1,93 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fio-test-configmap-2
+data:
+  test.fio: |
+    [global]
+    ioengine=libaio
+    direct=1
+    time_based
+    runtime=300
+    randrepeat=0
+    refill_buffers
+    norandommap
+    group_reporting
+    #ramp_time=5
+    size=20G
+    #rwmixread=70
+    filename=/datas/test.bin
+
+    [seq-write-throughput]
+    stonewall
+    rw=write
+    bs=1M
+    numjobs=4
+    iodepth=16
+
+    [seq-read-throughput]
+    stonewall
+    rw=read
+    bs=1M
+    numjobs=4
+    iodepth=16
+
+    [fio-write-iops]
+    stonewall
+    rw=write
+    bs=4k
+    numjobs=4
+    iodepth=32
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-fio-test-vm-3
+  #generateName: pod-qos-1c-
+spec:
+  terminationGracePeriodSeconds: 6
+  restartPolicy: Never
+  nodeSelector:
+    kubernetes.io/hostname: node-03
+  tolerations:
+  - effect: NoSchedule
+    key: node-role.kubernetes.io/sys-worker
+    operator: Exists
+  - effect: NoSchedule
+    key: node-role.kubernetes.io/control-plane
+    operator: Exists
+  # initContainers:
+  # - name: init-fio
+  #   image: harbor.lenovo.com/cybertron/ac-lab/library/busybox:latest
+  #   imagePullPolicy: IfNotPresent
+  #   command: ['sh', '-c', "dd if=/dev/zero of=/datas/test.bin bs=4M count=5120 oflag=direct"]
+  #   volumeMounts:
+  #   - mountPath: "/datas"
+  #     name: datas
+  containers:
+  - name: fio-test
+    image: uklab/fio:3.7
+    imagePullPolicy: IfNotPresent
+    #command: ["sleep", "3600"]
+    command: ["fio"]
+    args: ["/tmp/fio-scripts/test.fio"]
+    volumeMounts:
+    - name: fio-scripts
+      mountPath: /tmp/fio-scripts
+    - mountPath: "/datas"
+      name: datas
+    #resources:
+    #  limits:
+    #    cpu: "1"
+    #    memory: 1Gi
+    #  requests:
+    #    cpu: "1"
+    #    memory: 1Gi
+  volumes:
+  - name: fio-scripts
+    configMap:
+      name: fio-test-configmap-2
+  - name: datas
+    persistentVolumeClaim:
+      claimName: test-pvc

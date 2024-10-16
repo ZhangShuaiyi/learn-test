@@ -1,0 +1,34 @@
+kind: Pod
+apiVersion: v1
+metadata:
+  labels:
+    test: stress-memory
+  generateName: stress-memory-
+spec:
+  restartPolicy: Never
+  containers:
+  - image: artifacts.lenovo.com/cybertron-dev/stress:latest
+    imagePullPolicy: IfNotPresent
+    command:
+    - stress
+    - --vm-hang
+    - "5"
+    # 测试内存的进程数目
+    - --vm
+    - "1"
+    # 每个进程测试的内存大小
+    - --vm-bytes
+    - 1G
+    # 测试时间
+    - --timeout
+    - 120s
+    name: stress-memory
+    resources:
+      # 容器资源申请量
+      requests:
+        memory: "1Gi"
+        cpu: 1
+      # 容器资源限制量
+      # limits:
+      #   memory: "1Gi"
+      #   cpu: 1
